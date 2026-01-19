@@ -1,0 +1,14 @@
+name: enso_mjo
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - jupyter
+  - numpy
+  - matplotlib
+  - scipy
+  - netcdf4
+  - xarray
+  - pandas
+  - dask
+prefix: D:\MyPrograms\Anaconda\envs\enso_mjo
