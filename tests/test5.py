@@ -12,9 +12,10 @@ import seaborn as sns
 from pathlib import Path
 
 # 设置
-TILT_NC = r"E:\Datas\ClimateIndex\processed\tilt_daily_step4_layermean_1979-2022.nc"
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\checks")
+TILT_NC = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\checks_step4")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def analyze_tails():
     print(f"Loading data from {TILT_NC}...")
@@ -32,7 +33,7 @@ def analyze_tails():
     plt.title("West Boundary Comparison: Lower vs Upper")
     plt.xlabel("Relative Longitude (deg)")
     plt.legend()
-    out_fig1 = FIG_DIR / "check_west_boundary_comparison.png"
+    out_fig1 = FIG_DIR / "west_boundary_comparison_step4_1979-2022.png"
     plt.savefig(out_fig1, bbox_inches='tight')
     print(f"Figure saved to: {out_fig1}")
     plt.close()
@@ -43,7 +44,7 @@ def analyze_tails():
     plt.title("Correlation: Upper West vs Tilt Index")
     plt.xlabel("Upper West Relative Longitude (deg)")
     plt.ylabel("Daily Tilt Index (deg)")
-    out_fig2 = FIG_DIR / "check_upper_west_vs_tilt_scatter.png"
+    out_fig2 = FIG_DIR / "upper_west_vs_tilt_scatter_step4_1979-2022.png"
     plt.savefig(out_fig2, bbox_inches='tight')
     print(f"Figure saved to: {out_fig2}")
     plt.close()
@@ -53,7 +54,7 @@ def analyze_tails():
     melted_df = df.melt(value_vars=["up_west_rel", "low_west_rel", "tilt"], var_name="Variable", value_name="Value")
     sns.boxplot(data=melted_df, x="Variable", y="Value", palette="vlag")
     plt.title("Outliers (Tail Effects) Visualization")
-    out_fig3 = FIG_DIR / "check_outlier_boxplots.png"
+    out_fig3 = FIG_DIR / "outlier_boxplots_step4_1979-2022.png"
     plt.savefig(out_fig3, bbox_inches='tight')
     print(f"Figure saved to: {out_fig3}")
     plt.close()

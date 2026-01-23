@@ -24,10 +24,9 @@ from scipy import stats
 # ======================
 # PATHS
 # ======================
-EVENT_STATS_CSV = r"E:\Datas\ClimateIndex\processed\tilt_event_stats_1979-2022.csv"
+EVENT_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_1979-2022.csv"
 ONI_TXT = r"E:\Datas\ClimateIndex\raw\oni\oni.ascii.txt"
-
-OUT_CSV = r"E:\Datas\ClimateIndex\processed\tilt_event_stats_with_enso.csv"
+OUT_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
 FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FIG_BOX = FIG_DIR / "tilt_boxplot_by_enso.png"

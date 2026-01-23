@@ -21,11 +21,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
 # Input Files
-TILT_NC = r"E:\Datas\ClimateIndex\processed\tilt_daily_step4_layermean_1979-2022.nc"
-EVENTS_CSV = r"E:\Datas\ClimateIndex\processed\mjo_events_step3_1979-2022.csv"
+TILT_NC = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
+EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 
 # Output Directory
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\checks")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\checks_step4")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Settings
@@ -118,7 +118,7 @@ def plot_event_trajectory(ds, events, n_examples=3):
         ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left', bbox_to_anchor=(1.05, 1), borderaxespad=0.)
         
         plt.tight_layout()
-        out_path = FIG_DIR / f"check_trajectory_event_{eid}.png"
+        out_path = FIG_DIR / f"trajectory_boxes_tilt_step4_1979-2022_event{int(eid):03d}.png"
         plt.savefig(out_path)
         print(f"  Saved {out_path}")
         plt.close()
@@ -158,7 +158,7 @@ def plot_tilt_geometry_check(ds):
     
     ax.legend()
     plt.tight_layout()
-    plt.savefig(FIG_DIR / "check_tilt_geometry_scatter.png")
+    plt.savefig(FIG_DIR / "geometry_scatter_step4_1979-2022.png")
     plt.close()
 
 def plot_seasonal_distribution(ds):
@@ -185,7 +185,7 @@ def plot_seasonal_distribution(ds):
     ax.set_title("Seasonal Distribution of Valid Tilt Samples (1979-2022)")
     
     plt.tight_layout()
-    plt.savefig(FIG_DIR / "check_seasonal_counts.png")
+    plt.savefig(FIG_DIR / "seasonal_counts_step4_1979-2022.png")
     plt.close()
 
 def plot_tilt_histogram_all(ds):
@@ -208,7 +208,7 @@ def plot_tilt_histogram_all(ds):
     ax.legend()
     
     plt.tight_layout()
-    plt.savefig(FIG_DIR / "check_daily_tilt_hist.png")
+    plt.savefig(FIG_DIR / "daily_tilt_hist_step4_1979-2022.png")
     plt.close()
 
 def main():

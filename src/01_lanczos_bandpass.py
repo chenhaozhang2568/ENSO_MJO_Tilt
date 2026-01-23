@@ -29,12 +29,14 @@ import xarray as xr
 # USER PATHS (KEEP SAME)
 # ======================
 OLR_PATH = r"E:\Datas\ClimateIndex\raw\olr\olr.day.mean.nc"
-ERA5_DIR = r"E:\Datas\ERA5\raw\pressure_level"
+ERA5_DIR = r"E:\Datas\ERA5\raw\pressure_level\era5_1979-2022_quvwT_9_20 -180 20 180"
 
 OUT_OLR_DIR = Path(r"E:\Datas\ClimateIndex\processed")
-OUT_ERA5_DIR = Path(r"E:\Datas\ERA5\processed")
+OUT_ERA5_PL_DIR = Path(r"E:\Datas\ERA5\processed\pressure_level")
+
 OUT_OLR_DIR.mkdir(parents=True, exist_ok=True)
-OUT_ERA5_DIR.mkdir(parents=True, exist_ok=True)
+OUT_ERA5_PL_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # ======================
 # TIME RANGE (EDIT HERE)
@@ -224,13 +226,28 @@ def step2_filter_olr() -> Path:
 
     ds = ds.sel(lon=slice(LON_MIN, LON_MAX))
 
+    # ... (原有代码: ds = ds.sel(lon=slice(LON_MIN, LON_MAX)))
+
+    # ================= NEW: 计算原始距平 (Raw Anomaly) =================
+    # 目的：为了后续回归重建能恢复真实振幅，需计算去除季节循环后的异常值
+    # 方法：减去多年日平均气候态 (Climatology)
+    print("Calculating daily anomaly (removing seasonal cycle)...")
+    climatology = ds[var].groupby("time.dayofyear").mean("time")
+    olr_anom = ds[var].groupby("time.dayofyear") - climatology
+    olr_anom = olr_anom.drop_vars("dayofyear").rename("olr_anom")
+    # ===================================================================
+
     w_bp = lanczos_bandpass_weights(PERIOD_LOW, PERIOD_HIGH, BANDPASS_WINDOW)
     olr_bp = apply_fir_convolution_along_time(ds[var], w_bp, "time").rename("olr_bp")
 
-    out = xr.Dataset({"olr_bp": olr_bp})
+    # 修改输出 Dataset，把 olr_anom 也加进去
+    out = xr.Dataset({"olr_bp": olr_bp, "olr_anom": olr_anom}) # <--- 修改这里
     out["olr_bp"].attrs.update(ds[var].attrs)
     out["olr_bp"].attrs["filter"] = f"Lanczos bandpass {PERIOD_LOW:.0f}-{PERIOD_HIGH:.0f} day, window={BANDPASS_WINDOW}"
-
+    # ... (原有代码: out["olr_bp"].attrs...)
+    # 记得给新变量加属性，防止由计算产生的属性丢失
+    out["olr_anom"].attrs = ds[var].attrs
+    out["olr_anom"].attrs["note"] = "Raw daily anomaly (seasonal cycle removed), NO bandpass filter"
     out = _sanitize_coords_for_netcdf(out)
     out_path = OUT_OLR_DIR / f"olr_bp_{START_DATE[:4]}-{END_DATE[:4]}.nc"
     out.to_netcdf(out_path, engine="netcdf4", encoding=_encoding_for_dataset(out))
@@ -314,10 +331,9 @@ def step2_filter_era5_u() -> Path:
     out["u200_bp"].attrs["filter"] = f"Lanczos bandpass {PERIOD_LOW:.0f}-{PERIOD_HIGH:.0f} day, window={BANDPASS_WINDOW}"
 
     out = _sanitize_coords_for_netcdf(out)
-    out_path = OUT_ERA5_DIR / f"era5_u850_u200_bp_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+    out_path = OUT_ERA5_PL_DIR / f"era5_u850_u200_bp_{START_DATE[:4]}-{END_DATE[:4]}.nc"
     out.to_netcdf(out_path, engine="netcdf4", encoding=_encoding_for_dataset(out))
     return out_path
-
 
 # ======================
 # ADD: STEP2: ERA5 omega (w) bandpass (lat-mean over 15S–15N)
@@ -403,7 +419,7 @@ def step2_filter_era5_w() -> Path:
     out["w_bp"].attrs["note"] = "Meridional mean applied before filtering (linear, commutes with filtering); output is (time, level, lon)."
 
     out = _sanitize_coords_for_netcdf(out)
-    out_path = OUT_ERA5_DIR / f"era5_w_bp_latmean_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+    out_path = OUT_ERA5_PL_DIR / f"era5_w_bp_latmean_{START_DATE[:4]}-{END_DATE[:4]}.nc"
     out.to_netcdf(out_path, engine="netcdf4", encoding=_encoding_for_dataset(out))
     return out_path
 

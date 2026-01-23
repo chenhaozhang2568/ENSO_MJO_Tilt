@@ -33,13 +33,16 @@ from scipy.ndimage import gaussian_filter
 # ======================
 # USER PATHS
 # ======================
-STEP3_NC = r"E:\Datas\ClimateIndex\processed\mjo_mvEOF_step3_1979-2022.nc"
-ERA5_W_LATMEAN = r"E:\Datas\ERA5\processed\era5_w_bp_latmean_1979-2022.nc"
-EVENTS_CSV = r"E:\Datas\ClimateIndex\processed\mjo_events_step3_1979-2022.csv"
+STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
+EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 
+# ERA5 processed pressure-level product
+ERA5_W_LATMEAN = r"E:\Datas\ERA5\processed\pressure_level\era5_w_bp_latmean_1979-2022.nc"
+
+# figure output
 FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
-OUT_FIG = FIG_DIR / "FigB_like_omega_xsec_active_mean_1979-2022.png"
+OUT_FIG = FIG_DIR / "omega_xsec_active_mean_1979-2022.png"
 
 # ======================
 # SETTINGS (match Step3)
@@ -53,8 +56,8 @@ OLR_MIN_THRESH = -15.0
 ACTIVE_ONLY = True  # True: only days with olr_center_track <= thresh; False: ignore active filter
 
 # --- layer definition (hPa) for boxes only ---
-LOW_LAYER = (1000.0, 700.0)   # inclusive slice
-UP_LAYER  = (300.0, 200.0)    # inclusive slice
+LOW_LAYER = (1000.0, 600.0)   # inclusive slice
+UP_LAYER  = (400.0, 200.0)    # inclusive slice
 
 # --- relative-lon domain for composite (deg) ---
 REL_LON_RANGE = (-90.0, 90.0)    # show like paper

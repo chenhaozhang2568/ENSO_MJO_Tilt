@@ -24,10 +24,11 @@ from pathlib import Path
 # ======================
 # USER PATHS
 # ======================
-STEP3_NC = r"E:\Datas\ClimateIndex\processed\mjo_mvEOF_step3_1979-2022.nc"
-ERA5_W_LATMEAN = r"E:\Datas\ERA5\processed\era5_w_bp_latmean_1979-2022.nc"
-OUT_NC = r"E:\Datas\ClimateIndex\processed\tilt_daily_step4_layermean_1979-2022.nc"
-EVENTS_CSV = r"E:\Datas\ClimateIndex\processed\mjo_events_step3_1979-2022.csv"
+STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
+EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
+ERA5_W_LATMEAN = r"E:\Datas\ERA5\processed\pressure_level\era5_w_bp_latmean_1979-2022.nc"
+OUT_NC = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
+
 
 # ======================
 # SETTINGS (match Step3)
@@ -39,8 +40,8 @@ TRACK_LON_MIN = 0.0
 TRACK_LON_MAX = 180.0
 
 # --- layer-mean definition (hPa) ---
-LOW_LAYER = (1000.0, 700.0)   # inclusive slice: 1000..700
-UP_LAYER  = (300.0, 200.0)    # inclusive slice: 300..200
+LOW_LAYER = (1000.0, 600.0)   # inclusive slice: 1000..600
+UP_LAYER  = (400.0, 200.0)    # inclusive slice: 400..200
 # 备选：UP_LAYER = (500.0, 200.0)
 
 
