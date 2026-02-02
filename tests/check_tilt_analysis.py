@@ -1,10 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-test4.py: Generate check plots for MJO Tilt analysis
+check_tilt_analysis.py: MJO 倾斜分析检查图生成
 
-Usage:
-  cd notebooks
-  python test4.py
+================================================================================
+功能描述：
+    本脚本生成一系列检查图，用于验证 MJO 倾斜分析（Step4）的结果质量和合理性。
+
+主要输出：
+    1. 事件轨迹图（时间 vs 相对经度，含高低层边界框）
+    2. 几何检查散点图（上层西边界 vs 下层西边界）
+    3. 季节分布图（各月有效 Tilt 日数统计）
+    4. 逐日 Tilt 值直方图
+
+用途：
+    快速检查 Tilt 计算结果是否合理，发现潜在的数据问题或算法缺陷。
 """
 
 import sys

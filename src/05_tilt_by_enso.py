@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-Calculate tilt statistics separated by ENSO phase (El Nino, La Nina, Neutral).
+05_tilt_by_enso.py: Step6 - ENSO 分组 Tilt 统计分析
 
-Inputs:
-- Tilt Event Stats: E:\\Datas\\ClimateIndex\\processed\\tilt_event_stats_1979-2022.csv
-  (Output from 04_tilt_statistics.py)
-- ONI Index: E:\\Datas\\ClimateIndex\\raw\\oni\\oni.ascii.txt
+================================================================================
+功能描述：
+    本脚本按 ENSO 相位（El Niño、La Niña、Neutral）对 MJO 事件进行分组，
+    计算各组 Tilt 统计量并进行显著性检验。
 
-Outputs:
-- ENSO classified stats CSV: E:\\Datas\\ClimateIndex\\processed\\tilt_event_stats_with_enso.csv
-- Boxplot Figure: E:\\Projects\\ENSO_MJO_Tilt\\outputs\\figures\\tilt_boxplot_by_enso.png
-- Distribution Figure: E:\\Projects\\ENSO_MJO_Tilt\\outputs\\figures\\tilt_distribution_by_enso.png
-- Combined Stats Figure: E:\\Projects\\ENSO_MJO_Tilt\\outputs\\figures\\tilt_combined_stats_by_enso.png
+ENSO 分类标准：
+    基于 NOAA ONI 指数（Oceanic Niño Index）：
+    - El Niño：ONI ≥ +0.5°C
+    - La Niña：ONI ≤ -0.5°C
+    - Neutral：-0.5°C < ONI < +0.5°C
+
+输出：
+    - tilt_event_stats_with_enso_1979-2022.csv：含 ENSO 分类的事件统计
+    - tilt_boxplot_by_enso.png：分组箱线图
+    - tilt_distribution_by_enso.png：分组 KDE 分布图
+    - tilt_combined_stats_by_enso.png：综合统计图（小提琴图、柱状图、散点图）
 """
 
 import numpy as np

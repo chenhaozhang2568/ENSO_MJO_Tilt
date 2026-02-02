@@ -1,15 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-E:\Projects\ENSO_MJO_Tilt\src\02_mvEOF_new2.py
+02_mvEOF.py: Step3 - 多变量 EOF 分析、MJO 事件识别与 ERA5 场重建
 
-FIXES from 02_mvEOF_new.py:
-1. Latitudinal Mean BEFORE EOF: Apply meridional mean (15S-15N) to get (Time, Lon)
-   before MV-EOF, following Wheeler & Hendon (2004) methodology. This improves
-   signal-to-noise ratio and focuses on zonal propagation.
-2. Filter Edge Trimming: Remove first/last 60 days (Lanczos edge NaNs).
-3. Smart Bad Longitude Detection: Only remove longitudes with >50% NaN fraction.
-4. OLR Reconstruction: Use raw anomaly regression for proper amplitude.
-5. Restored threshold: OLR_MIN_THRESH = -15.0 (for raw anomaly).
+================================================================================
+功能描述：
+    本脚本实现 Wheeler & Hendon (2004) 的多变量 EOF 方法，提取 MJO 主成分，
+    并通过 OLR 重建追踪对流中心，识别 MJO 活跃事件。
+    同时使用 PC1/PC2 对 ERA5 气压层变量进行线性回归重建。
+
+主要步骤：
+    Part A - MJO EOF 分析：
+        1. 纬向平均（15°S-15°N）：OLR、U850、U200
+        2. 标准化后拼接为联合矩阵
+        3. SVD 提取前两个模态（PC1、PC2）
+        4. OLR 回归重建：olr_recon = β₁·PC1 + β₂·PC2
+        5. 追踪对流中心（OLR 最小值经度）
+        6. 事件识别：活跃天数、东传距离、经过 IO/MC 门槛
+    
+    Part B - ERA5 场重建（原 02b 功能）：
+        对 ERA5 u/v/w/q/t 场进行 PC 回归重建，提取 MJO 相关信号
+
+输出文件：
+    - mjo_mvEOF_step3_1979-2022.nc：PC1/PC2、振幅、相位、OLR 重建
+    - mjo_events_step3_1979-2022.csv：识别出的 MJO 事件列表
+    - era5_mjo_recon_{var}_1979-2022.nc：各变量的 MJO 重建场
 """
 
 from __future__ import annotations
@@ -18,12 +32,18 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pathlib import Path
+from datetime import datetime
+import warnings
+import os
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ======================
 # INPUTS (from Step2)
 # ======================
 OLR_BP_PATH = r"E:\Datas\ClimateIndex\processed\olr_bp_1979-2022.nc"
 U_BP_PATH   = r"E:\Datas\ERA5\processed\pressure_level\era5_u850_u200_bp_1979-2022.nc"
+OLR_RAW_PATH = r"E:\Datas\ClimateIndex\raw\olr\olr.day.mean.nc"  # 原始OLR用于重构
+ERA5_DIR = Path(r"E:\Datas\ERA5\raw\pressure_level\era5_pl_mean_quvwT")  # ERA5 uvwqt 场重建用
 
 # ======================
 # OUTPUTS
@@ -38,6 +58,12 @@ START_DATE = "1979-01-01"
 END_DATE   = "2022-12-31"
 
 # ======================
+# RUN OPTIONS
+# ======================
+# 设置为 True 重新生成 ERA5 重构文件，False 跳过 Part B（使用已有数据）
+RUN_ERA5_RECONSTRUCTION = False
+
+# ======================
 # PAPER-STYLE SETTINGS
 # ======================
 LAT_BAND = (-15.0, 15.0)
@@ -49,7 +75,7 @@ MAX_WEST_JUMP_DEG = 5.0
 # ======================
 # EVENT CRITERIA
 # ======================
-OLR_MIN_THRESH = -15.0
+OLR_MIN_THRESH = -10.0
 MIN_EAST_DISP_DEG = 50.0
 AMP_THRESH = None
 
@@ -64,6 +90,24 @@ MIN_ACTIVE_DAYS_IN_EVENT = 5
 
 # Filter edge trim (Lanczos 121-day window = 60 samples NaN at each edge)
 EDGE_TRIM = 60
+
+# ======================
+# WH04 FIXED SCALING FACTORS (Wheeler & Hendon 2004 standard)
+# Based on 1979-2001 climatology for consistent RMM definition
+# ======================
+WH04_STD_OLR = 15.1   # W/m²
+WH04_STD_U850 = 1.81  # m/s
+WH04_STD_U200 = 4.81  # m/s
+USE_WH04_FIXED_STD = True  # Set to False to use dynamic std
+
+# ======================
+# OLR REGRESSION TARGET SWITCH
+# ======================
+# 回归目标模式：
+#   "filtered"  = 使用滤波后的 OLR (olr_bp) 进行回归
+#   "raw"       = 使用原始 OLR 进行回归（包含气候态）
+#   "raw_anom"  = 使用原始 OLR 异常场进行回归（去除气候态，推荐）
+OLR_REGRESSION_MODE = "raw"  # <-- SWITCH: "filtered", "raw", or "raw_anom"
 
 # ======================
 # UTILITIES
@@ -99,10 +143,14 @@ def _winter_mask(time: xr.DataArray) -> xr.DataArray:
     m = time.dt.month
     return xr.apply_ufunc(lambda x: np.isin(x, list(WINTER_MONTHS)), m)
 
-def _standardize_by_space_time_std(x: np.ndarray) -> tuple[np.ndarray, float]:
-    s = np.nanstd(x)
-    if (not np.isfinite(s)) or s == 0:
-        s = 1.0
+def _standardize_by_space_time_std(x: np.ndarray, fixed_std: float = None) -> tuple[np.ndarray, float]:
+    """Standardize by space-time std. If fixed_std is provided, use it instead."""
+    if fixed_std is not None and fixed_std > 0:
+        s = fixed_std
+    else:
+        s = np.nanstd(x)
+        if (not np.isfinite(s)) or s == 0:
+            s = 1.0
     return x / s, float(s)
 
 def _svd_eof(X: np.ndarray, nmode: int = 2) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -466,8 +514,28 @@ def main():
     print(f"[PRE-PROCESS] Interpolating ERA5 -> OLR (2.5°)...")
     print(f"  Original ERA5 shape: {ds_u['u850_bp'].shape}")
     print(f"  Target OLR shape: {ds_olr['olr_bp'].shape}")
+    
+    # ============================================================
+    # 诊断 1: 经度对齐验证（插值前）
+    # ============================================================
+    print("\n[DIAGNOSTIC 1] Longitude Alignment Check (BEFORE interp):")
+    print(f"  OLR lon range: [{float(ds_olr['lon'].min()):.2f}, {float(ds_olr['lon'].max()):.2f}], n={ds_olr.sizes['lon']}")
+    print(f"  ERA5 lon range: [{float(ds_u['lon'].min()):.2f}, {float(ds_u['lon'].max()):.2f}], n={ds_u.sizes['lon']}")
+    print(f"  OLR lon first 5: {ds_olr['lon'].values[:5]}")
+    print(f"  OLR lon last 5: {ds_olr['lon'].values[-5:]}")
+    print(f"  ERA5 lon first 5: {ds_u['lon'].values[:5]}")
+    print(f"  ERA5 lon last 5: {ds_u['lon'].values[-5:]}")
+    
     ds_u = ds_u.interp(lat=ds_olr["lat"], lon=ds_olr["lon"], method="linear")
     print(f"  Interpolated ERA5 shape: {ds_u['u850_bp'].shape}")
+    
+    # 诊断 1 续: 插值后验证
+    print("[DIAGNOSTIC 1] Longitude Alignment Check (AFTER interp):")
+    lon_match = np.allclose(ds_olr['lon'].values, ds_u['lon'].values)
+    print(f"  Longitudes exactly match: {lon_match}")
+    if not lon_match:
+        print(f"  WARNING: Longitude mismatch detected!")
+        print(f"  Max lon diff: {np.max(np.abs(ds_olr['lon'].values - ds_u['lon'].values)):.6f}")
 
     # ---- 3. Time Subset & Align ----
     ds_olr = ds_olr.sel(time=slice(START_DATE, END_DATE))
@@ -490,11 +558,21 @@ def main():
     u850_bp_2d = ds_u["u850_bp"].mean("lat", skipna=True).transpose("time", "lon")
     u200_bp_2d = ds_u["u200_bp"].mean("lat", skipna=True).transpose("time", "lon")
     
-    # Load raw anomaly for regression reconstruction
-    if "olr_anom" in ds_olr:
-        olr_raw_anom = ds_olr["olr_anom"].mean("lat", skipna=True).transpose("time", "lon")
-    else:
-        raise KeyError("Input file missing 'olr_anom'. Please re-run Step 1 (01_lanczos_bandpass_new2.py).")
+    # ============================================================
+    # Load RAW OLR for regression reconstruction (instead of anomaly)
+    # ============================================================
+    print("[OLR RAW] Loading original OLR data for reconstruction...")
+    ds_olr_raw = _to_lon_180(_rename_latlon_if_needed(_open_ds(OLR_RAW_PATH)))
+    ds_olr_raw = ds_olr_raw.sel(time=slice(START_DATE, END_DATE))
+    ds_olr_raw = _sel_lat_band(ds_olr_raw, LAT_BAND)
+    
+    # Align raw OLR to filtered OLR grid (in case of slight differences)
+    ds_olr_raw = ds_olr_raw.interp(lon=ds_olr["lon"], method="nearest")
+    ds_olr_raw, _ = xr.align(ds_olr_raw, ds_olr, join="inner")
+    
+    # Apply meridional mean
+    olr_raw_2d = ds_olr_raw["olr"].mean("lat", skipna=True).transpose("time", "lon")
+    print(f"  Raw OLR loaded: shape = {olr_raw_2d.shape}")
     
     print(f"  After lat-mean: OLR shape = {olr_bp_2d.shape}, U850 shape = {u850_bp_2d.shape}")
 
@@ -505,18 +583,18 @@ def main():
     olr_bp_2d = olr_bp_2d.isel(time=slice(EDGE_TRIM, -EDGE_TRIM))
     u850_bp_2d = u850_bp_2d.isel(time=slice(EDGE_TRIM, -EDGE_TRIM))
     u200_bp_2d = u200_bp_2d.isel(time=slice(EDGE_TRIM, -EDGE_TRIM))
-    olr_raw_anom = olr_raw_anom.isel(time=slice(EDGE_TRIM, -EDGE_TRIM))
+    olr_raw_2d = olr_raw_2d.isel(time=slice(EDGE_TRIM, -EDGE_TRIM))
     print(f"  Time range after trimming: {olr_bp_2d.sizes['time']} days")
 
     # ============================================================
     # CRITICAL FIX 2: Remove bad longitudes BEFORE dropping days
     # ============================================================
-    vars_to_clean = [olr_bp_2d, u850_bp_2d, u200_bp_2d, olr_raw_anom]
+    vars_to_clean = [olr_bp_2d, u850_bp_2d, u200_bp_2d, olr_raw_2d]
     cleaned_vars = _drop_bad_longitudes(vars_to_clean)
     olr_bp_2d = cleaned_vars[0]
     u850_bp_2d = cleaned_vars[1]
     u200_bp_2d = cleaned_vars[2]
-    olr_raw_anom = cleaned_vars[3]
+    olr_raw_2d = cleaned_vars[3]
     print(f"  Grid size after cleaning: {olr_bp_2d.sizes['lon']} longitudes")
 
     # ---- 5. Winter mask & training subset ----
@@ -543,9 +621,17 @@ def main():
     u850_tr_anom = (u850_tr - mu_u850).values.astype(np.float64)
     u200_tr_anom = (u200_tr - mu_u200).values.astype(np.float64)
 
-    olr_tr_std,  s_olr  = _standardize_by_space_time_std(olr_tr_anom)
-    u850_tr_std, s_u850 = _standardize_by_space_time_std(u850_tr_anom)
-    u200_tr_std, s_u200 = _standardize_by_space_time_std(u200_tr_anom)
+    # Use WH04 fixed std or dynamic std based on setting
+    if USE_WH04_FIXED_STD:
+        print(f"[WH04] Using fixed scaling: OLR={WH04_STD_OLR}, U850={WH04_STD_U850}, U200={WH04_STD_U200}")
+        olr_tr_std,  s_olr  = _standardize_by_space_time_std(olr_tr_anom, WH04_STD_OLR)
+        u850_tr_std, s_u850 = _standardize_by_space_time_std(u850_tr_anom, WH04_STD_U850)
+        u200_tr_std, s_u200 = _standardize_by_space_time_std(u200_tr_anom, WH04_STD_U200)
+    else:
+        olr_tr_std,  s_olr  = _standardize_by_space_time_std(olr_tr_anom)
+        u850_tr_std, s_u850 = _standardize_by_space_time_std(u850_tr_anom)
+        u200_tr_std, s_u200 = _standardize_by_space_time_std(u200_tr_anom)
+        print(f"[Dynamic] Computed scaling: OLR={s_olr:.2f}, U850={s_u850:.2f}, U200={s_u200:.2f}")
 
     Ttr, P = olr_tr_std.shape  # P = number of longitudes
     print(f"  Training matrix: {Ttr} days x {P} longitudes")
@@ -562,7 +648,14 @@ def main():
     EOFs, PCs_tr, _svals = _svd_eof(X_tr, nmode=2)
     pc1_scale = np.std(PCs_tr[:, 0]) or 1.0
     pc2_scale = np.std(PCs_tr[:, 1]) or 1.0
-    print(f"  EOF computed. PC1 scale: {pc1_scale:.3f}, PC2 scale: {pc2_scale:.3f}")
+    print(f"  EOF computed. PC1 scale (training std): {pc1_scale:.3f}, PC2 scale: {pc2_scale:.3f}")
+    
+    # ============================================================
+    # 诊断 2: PC 标准化一致性检查（训练期 vs 全周期）
+    # ============================================================
+    print("\n[DIAGNOSTIC 2] PC Standardization Consistency Check:")
+    print(f"  Training period PC1 std: {pc1_scale:.4f}")
+    print(f"  Training period PC2 std: {pc2_scale:.4f}")
 
     # ---- 10. Project full period ----
     olr_full_anom  = ((olr_bp_2d  - mu_olr ) / s_olr ).values.astype(np.float64)
@@ -601,35 +694,164 @@ def main():
     phase = _phase8(pc1, pc2).astype(np.int16)
     phase[~np.isfinite(pc1)] = 0
 
-    # ---- 11. OLR Reconstruction using regression (paper-style) ----
-    print("[OLR Reconstruction] Using regression (Raw Anomaly)...")
+    # ---- 11. OLR Reconstruction using regression ----
+    # FIX: Normalize PC to σ=1 and add intercept term (WH04 compliance)
+    # SWITCH: Use different OLR targets based on OLR_REGRESSION_MODE
+    if OLR_REGRESSION_MODE == "filtered":
+        print("[OLR Reconstruction] Mode: FILTERED OLR (olr_bp)...")
+        olr_target_2d = olr_bp_2d.values  # (time, lon) - bandpass filtered
+    elif OLR_REGRESSION_MODE == "raw":
+        print("[OLR Reconstruction] Mode: RAW OLR (with climatology)...")
+        olr_target_2d = olr_raw_2d.values  # (time, lon) - original
+    elif OLR_REGRESSION_MODE == "raw_anom":
+        print("[OLR Reconstruction] Mode: RAW OLR ANOMALY (climatology removed)...")
+        # 计算原始 OLR 的日气候态
+        olr_raw_vals = olr_raw_2d.values  # (time, lon)
+        time_index_raw = pd.to_datetime(olr_raw_2d["time"].values)
+        doy = time_index_raw.dayofyear
+        
+        # 按 day-of-year 计算气候态
+        clim = np.zeros((366, olr_raw_vals.shape[1]), dtype=np.float64)
+        count = np.zeros(366, dtype=np.int32)
+        for t in range(len(doy)):
+            d = doy[t] - 1  # 0-indexed
+            clim[d, :] += olr_raw_vals[t, :]
+            count[d] += 1
+        for d in range(366):
+            if count[d] > 0:
+                clim[d, :] /= count[d]
+        
+        # 计算异常场
+        olr_anom = np.zeros_like(olr_raw_vals)
+        for t in range(len(doy)):
+            d = doy[t] - 1
+            olr_anom[t, :] = olr_raw_vals[t, :] - clim[d, :]
+        
+        olr_target_2d = olr_anom
+        print(f"  Raw OLR anomaly range: [{np.nanmin(olr_anom):.2f}, {np.nanmax(olr_anom):.2f}] W/m²")
+    else:
+        raise ValueError(f"Unknown OLR_REGRESSION_MODE: {OLR_REGRESSION_MODE}")
+    
     time_index = pd.to_datetime(olr_bp_2d["time"].values)
     winter_np = np.isin(time_index.month, list(WINTER_MONTHS))
 
     pc1_winter = pc1[winter_np]
     pc2_winter = pc2[winter_np]
-    olr_target_winter = olr_raw_anom.values[winter_np, :]
+    olr_target_winter = olr_target_2d[winter_np, :]
 
+    # ============================================================
+    # 修复：移除二次标准化
+    # PC 已在 EOF 投影时被 pc_scale 标准化（L673-674），此处不再重复标准化
+    # 直接使用 PC 进行回归，回归系数 β 的物理意义更清晰：
+    #   β = dOLR / dPC (单位: W/m² per unit PC)
+    # ============================================================
+    pc1_valid_mask = np.isfinite(pc1_winter)
+    pc2_valid_mask = np.isfinite(pc2_winter)
+    
+    # 仅去除均值（中心化），不再除以标准差
+    pc1_winter_mean = np.nanmean(pc1_winter[pc1_valid_mask])
+    pc2_winter_mean = np.nanmean(pc2_winter[pc2_valid_mask])
+    pc1_winter_std = np.nanstd(pc1_winter[pc1_valid_mask])  # 仅用于诊断
+    pc2_winter_std = np.nanstd(pc2_winter[pc2_valid_mask])  # 仅用于诊断
+    
+    # 仅中心化，不缩放（PC 已经是约 σ≈1）
+    pc1_centered = pc1_winter - pc1_winter_mean
+    pc2_centered = pc2_winter - pc2_winter_mean
+    print(f"  PC centered (no re-scaling): PC1 std={pc1_winter_std:.3f}, PC2 std={pc2_winter_std:.3f}")
+    
+    # ============================================================
+    # 诊断: PC 标准化一致性检查
+    # ============================================================
+    print("\n[DIAGNOSTIC] PC Standardization Check:")
+    print(f"  EOF training PC1 scale: {pc1_scale:.4f}")
+    print(f"  EOF training PC2 scale: {pc2_scale:.4f}")
+    print(f"  Winter PC1 std: {pc1_winter_std:.4f}, PC2 std: {pc2_winter_std:.4f}")
+    print(f"  Ratio (winter_std / training_scale): PC1={pc1_winter_std/pc1_scale:.4f}, PC2={pc2_winter_std/pc2_scale:.4f}")
+    print("  ✓ Using single standardization (no double-scaling)")
+
+    beta0 = np.full(P, np.nan, dtype=np.float64)  # Intercept
     beta1 = np.full(P, np.nan, dtype=np.float64)
     beta2 = np.full(P, np.nan, dtype=np.float64)
 
     for j in range(P):
-        valid = np.isfinite(pc1_winter) & np.isfinite(pc2_winter) & np.isfinite(olr_target_winter[:, j])
+        valid = np.isfinite(pc1_centered) & np.isfinite(pc2_centered) & np.isfinite(olr_target_winter[:, j])
         if valid.sum() < 30:
             continue
-        X_reg = np.column_stack([pc1_winter[valid], pc2_winter[valid]])
+        # 回归模型：OLR = beta0 + beta1*PC1 + beta2*PC2
+        X_reg = np.column_stack([np.ones(valid.sum()), pc1_centered[valid], pc2_centered[valid]])
         y_reg = olr_target_winter[valid, j]
         try:
             b, _, _, _ = np.linalg.lstsq(X_reg, y_reg, rcond=None)
-            beta1[j], beta2[j] = b
+            beta0[j], beta1[j], beta2[j] = b
         except:
             pass
 
-    recon_flat = pc1[:, None] * beta1[None, :] + pc2[:, None] * beta2[None, :]
+    # 使用中心化的全周期 PC 进行重建（仅去均值，与训练保持一致）
+    pc1_full_centered = pc1 - pc1_winter_mean
+    pc2_full_centered = pc2 - pc2_winter_mean
     
-    valid_beta = np.isfinite(beta1) & np.isfinite(beta2)
-    print(f"  Regression: {valid_beta.sum()}/{P} grid points")
-    print(f"  Reconstructed OLR range: [{np.nanmin(recon_flat):.2f}, {np.nanmax(recon_flat):.2f}] W/m²")
+    # MJO 信号 = beta1*PC1 + beta2*PC2（不含截距，用于追踪）
+    recon_anomaly = pc1_full_centered[:, None] * beta1[None, :] + pc2_full_centered[:, None] * beta2[None, :]
+    recon_full = beta0[None, :] + recon_anomaly  # 完整重建（含气候态）
+    
+    valid_beta = np.isfinite(beta0) & np.isfinite(beta1) & np.isfinite(beta2)
+    print(f"  Regression: {valid_beta.sum()}/{P} grid points (with intercept)")
+    print(f"  Intercept (climatology) range: [{np.nanmin(beta0):.2f}, {np.nanmax(beta0):.2f}] W/m²")
+    print(f"  OLR anomaly (MJO signal) range: [{np.nanmin(recon_anomaly):.2f}, {np.nanmax(recon_anomaly):.2f}] W/m²")
+    
+    # ============================================================
+    # 诊断 3: PC1 与 OLR 异常场的相关系数
+    # ============================================================
+    print("\n[DIAGNOSTIC 3] PC1-OLR Correlation Check:")
+    
+    # 选取几个关键经度点计算相关系数
+    diag_lons = [60.0, 90.0, 120.0, 150.0]  # 印度洋到西太平洋
+    lon_values = olr_bp_2d["lon"].values
+    
+    for diag_lon in diag_lons:
+        # 找到最近的经度索引
+        lon_idx = int(np.argmin(np.abs(lon_values - diag_lon)))
+        actual_lon = lon_values[lon_idx]
+        
+        # 获取该经度的 OLR 时间序列
+        olr_at_lon = olr_bp_2d.values[:, lon_idx]  # 滤波后的 OLR 异常
+        
+        # 计算与 PC1 的相关系数
+        valid_mask = np.isfinite(pc1) & np.isfinite(olr_at_lon)
+        if valid_mask.sum() > 30:
+            corr_pc1 = np.corrcoef(pc1[valid_mask], olr_at_lon[valid_mask])[0, 1]
+            corr_pc2 = np.corrcoef(pc2[valid_mask], olr_at_lon[valid_mask])[0, 1]
+            print(f"  @ {actual_lon:.1f}°E: PC1-OLR corr = {corr_pc1:.3f}, PC2-OLR corr = {corr_pc2:.3f}")
+        else:
+            print(f"  @ {actual_lon:.1f}°E: Insufficient valid data points")
+    
+    # 综合诊断结论
+    # 选取印度洋 (90°E) 作为主要诊断点
+    io_lon_idx = int(np.argmin(np.abs(lon_values - 90.0)))
+    olr_at_io = olr_bp_2d.values[:, io_lon_idx]
+    valid_io = np.isfinite(pc1) & np.isfinite(olr_at_io)
+    corr_io = np.corrcoef(pc1[valid_io], olr_at_io[valid_io])[0, 1] if valid_io.sum() > 30 else np.nan
+    
+    print(f"\n[DIAGNOSTIC CONCLUSION]")
+    if np.isfinite(corr_io):
+        if abs(corr_io) < 0.3:
+            print(f"  ❌ PC1-OLR (90°E) corr = {corr_io:.3f} << 0.5")
+            print(f"     EOF可能计算错误（数据未对齐或权重极度错误）")
+            print(f"     PC 没有捕捉到 OLR 的变化，重构自然很小。")
+        elif abs(corr_io) < 0.5:
+            print(f"  ⚠️ PC1-OLR (90°E) corr = {corr_io:.3f} < 0.5")
+            print(f"     EOF 可能有问题，建议检查数据对齐和权重。")
+        elif abs(corr_io) < 0.8:
+            print(f"  ⚠️ PC1-OLR (90°E) corr = {corr_io:.3f} (0.5~0.8)")
+            print(f"     EOF 基本合理，但回归公式可能需要检查。")
+        else:
+            print(f"  ✓ PC1-OLR (90°E) corr = {corr_io:.3f} > 0.8")
+            print(f"     EOF 正确，如果重构仍有问题，检查回归公式（如 PC 是否正确标准化）。")
+    else:
+        print(f"  无法计算相关系数（数据不足）")
+    
+    # Use anomaly for tracking (negative = enhanced convection)
+    recon_flat = recon_anomaly
 
     recon_da = xr.DataArray(
         recon_flat.astype(np.float32),
@@ -674,7 +896,7 @@ def main():
         "olr_center_track": xr.DataArray(olr_center.astype(np.float32), coords={"time": olr_bp_2d["time"]}, dims=("time",)),
         "olr_thr_centroid_lon": xr.DataArray(contour_lon.astype(np.float32), coords={"time": olr_bp_2d["time"]}, dims=("time",)),
     }, attrs={
-        "step": "MV-EOF with latitudinal mean (WH04-style) + OLR regression reconstruction",
+        "step": "MV-EOF with latitudinal mean (WH04-style) + Raw OLR regression reconstruction",
         "lat_band": f"{LAT_BAND[0]} to {LAT_BAND[1]}",
         "edge_trim_days": str(EDGE_TRIM),
         "olr_min_thresh": str(OLR_MIN_THRESH),
@@ -701,5 +923,233 @@ def main():
         print(df_events.head(10).to_string(index=False))
 
 
-if __name__ == "__main__":
+
+
+
+# ======================
+# PART B: ERA5 uvwqt 场重建 (原 02b_reconstruct_era5.py)
+# ======================
+ERA5_RECON_VARIABLES = ["u", "v", "w", "q", "t"]
+
+
+def _load_era5_for_recon(var: str, time_index: pd.DatetimeIndex) -> xr.DataArray:
+    """
+    Load ERA5 monthly files for one variable and concatenate.
+    Returns DataArray with dims (time, pressure_level, lon) after lat-averaging.
+    """
+    print(f"  Loading ERA5 {var}...")
+    
+    # Determine year-months to load
+    ym_set = set()
+    for t in time_index:
+        ym_set.add((t.year, t.month))
+    ym_list = sorted(ym_set)
+    
+    arrays = []
+    for year, month in ym_list:
+        fpath = ERA5_DIR / f"era5_pl_dailymean_quvwT_{year}{month:02d}.nc"
+        if not fpath.exists():
+            print(f"    WARNING: {fpath.name} not found, skipping")
+            continue
+        ds = xr.open_dataset(fpath)
+        ds = _rename_latlon_if_needed(ds)
+        ds = _to_lon_180(ds)
+        
+        # Select latitude band and average
+        lat_band = LAT_BAND
+        da = ds[var].sel(lat=slice(lat_band[1], lat_band[0]))  # ERA5 has decreasing lat
+        da = da.mean(dim="lat", keepdims=False)  # (time, level, lon)
+        arrays.append(da)
+    
+    # Concatenate along time
+    combined = xr.concat(arrays, dim="time")
+    
+    # Align to target time index
+    combined = combined.sel(time=time_index, method="nearest")
+    combined = combined.assign_coords(time=time_index)
+    
+    print(f"    Shape: {combined.shape}")
+    return combined
+
+
+def _reconstruct_era5_field(
+    field: xr.DataArray,
+    pc1: np.ndarray,
+    pc2: np.ndarray,
+    winter_mask: np.ndarray
+) -> xr.DataArray:
+    """
+    Reconstruct field using PC1/PC2 regression.
+    
+    Input field dims: (time, level, lon)
+    Output: same dims, MJO-reconstructed
+    """
+    # Get dimensions
+    time_coord = field["time"]
+    level_coord = field["pressure_level"]
+    lon_coord = field["lon"]
+    
+    T, L, X = field.shape  # time, level, lon
+    out = np.full((T, L, X), np.nan, dtype=np.float32)
+    
+    # Precompute valid PC mask
+    pc_valid = np.isfinite(pc1) & np.isfinite(pc2)
+    train_mask = winter_mask & pc_valid
+    
+    # Loop over levels and longitudes
+    for lev_idx in range(L):
+        for lon_idx in range(X):
+            y = field.values[:, lev_idx, lon_idx].astype(float)
+            m = train_mask & np.isfinite(y)
+            
+            if m.sum() < 10:
+                continue
+            
+            # Build design matrix [pc1, pc2] (no intercept for anomaly-like recon)
+            X_train = np.column_stack([pc1[m], pc2[m]])
+            y_train = y[m]
+            
+            # Least squares
+            beta, _, _, _ = np.linalg.lstsq(X_train, y_train, rcond=None)
+            
+            # Reconstruct for all valid PC times
+            out[pc_valid, lev_idx, lon_idx] = (
+                beta[0] * pc1[pc_valid] + beta[1] * pc2[pc_valid]
+            )
+    
+    return xr.DataArray(
+        out,
+        coords={"time": time_coord, "pressure_level": level_coord, "lon": lon_coord},
+        dims=("time", "pressure_level", "lon"),
+        name=f"{field.name}_mjo_recon"
+    )
+
+
+def reconstruct_era5_fields():
+    """
+    Part B: Reconstruct ERA5 uvwqt fields using MJO PC1/PC2.
+    This function is merged from 02b_reconstruct_era5.py.
+    
+    Outputs two versions for each variable:
+    1. era5_mjo_recon_{var}_*.nc - Raw MJO reconstruction
+    2. era5_mjo_recon_{var}_norm_*.nc - Normalized by MJO amplitude (Hu & Li 2021)
+    """
+    print("\n" + "="*70)
+    print("Part B: ERA5 uvwqT Reconstruction using MJO PC1/PC2")
+    print("="*70)
+    start_time = datetime.now()
+    
+    # Load PC data from just-created Step3 output
+    step3_nc = OUT_DIR / f"mjo_mvEOF_step3_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+    if not step3_nc.exists():
+        print(f"[ERROR] Step3 output not found: {step3_nc}")
+        print("        Run Part A (main) first to generate PC1/PC2.")
+        return
+    
+    print("Loading PC1/PC2 and amp from Step3...")
+    ds_pc = xr.open_dataset(step3_nc)
+    pc1 = ds_pc["pc1"]
+    pc2 = ds_pc["pc2"]
+    amp = ds_pc["amp"]  # MJO amplitude for normalization
+    time_index = pd.to_datetime(pc1["time"].values)
+    print(f"  PC time range: {time_index[0].strftime('%Y-%m-%d')} to {time_index[-1].strftime('%Y-%m-%d')}")
+    print(f"  Total days: {len(time_index)}")
+    
+    pc1_np = pc1.values.astype(float)
+    pc2_np = pc2.values.astype(float)
+    amp_np = amp.values.astype(float)
+    winter = np.array([t.month in WINTER_MONTHS for t in time_index])
+    
+    # Normalization settings (consistent with src/03_compute_tilt_daily.py)
+    AMP_FLOOR = 1.0  # Prevent small-amplitude blow-up
+    amp_safe = np.maximum(amp_np, AMP_FLOOR)
+    
+    print(f"\nWinter days (training): {winter.sum()}")
+    print(f"Amp stats: min={np.nanmin(amp_np):.2f}, mean={np.nanmean(amp_np):.2f}, max={np.nanmax(amp_np):.2f}")
+    print(f"Using AMP_FLOOR={AMP_FLOOR} for normalization")
+    
+    # Process each variable
+    for var in ERA5_RECON_VARIABLES:
+        print(f"\n{'='*50}")
+        print(f"Processing: {var}")
+        print("="*50)
+        
+        # Load ERA5 data
+        field = _load_era5_for_recon(var, time_index)
+        
+        # Reconstruct
+        print(f"  Reconstructing...")
+        recon = _reconstruct_era5_field(field, pc1_np, pc2_np, winter)
+        
+        # Check NaN ratio
+        nan_ratio = float(np.isnan(recon.values).mean())
+        print(f"  NaN ratio: {nan_ratio:.4f}")
+        
+        # ============================================================
+        # Save 1: Raw MJO reconstruction (unchanged)
+        # ============================================================
+        output_path = OUT_DIR / f"era5_mjo_recon_{var}_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+        
+        ds_out = xr.Dataset({
+            f"{var}_mjo_recon": recon
+        })
+        ds_out.attrs["description"] = f"MJO-reconstructed {var} field via PC1/PC2 regression"
+        ds_out.attrs["method"] = "Linear regression: field_hat = b1*pc1 + b2*pc2, trained on winter (Nov-Apr)"
+        ds_out.attrs["source"] = "ERA5 daily mean pressure level data"
+        ds_out.attrs["created"] = datetime.now().isoformat()
+        
+        ds_out.to_netcdf(output_path)
+        print(f"  Saved (raw): {output_path}")
+        
+        # ============================================================
+        # Save 2: Normalized by MJO amplitude (Hu & Li 2021 method)
+        # ============================================================
+        recon_np = recon.values.astype(float)  # (time, level, lon)
+        
+        # Normalize: divide by amp along time axis
+        # amp_safe shape: (time,) -> expand to (time, 1, 1) for broadcasting
+        recon_norm_np = recon_np / amp_safe[:, None, None]
+        
+        recon_norm = xr.DataArray(
+            recon_norm_np.astype(np.float32),
+            coords=recon.coords,
+            dims=recon.dims,
+            name=f"{var}_mjo_recon_norm"
+        )
+        
+        output_path_norm = OUT_DIR / f"era5_mjo_recon_{var}_norm_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+        
+        ds_out_norm = xr.Dataset({
+            f"{var}_mjo_recon_norm": recon_norm
+        })
+        ds_out_norm.attrs["description"] = f"MJO-reconstructed {var} field, normalized by MJO amplitude"
+        ds_out_norm.attrs["method"] = "field_norm = (b1*pc1 + b2*pc2) / max(amp, 1.0)"
+        ds_out_norm.attrs["reference"] = "Hu & Li (2021) normalization method"
+        ds_out_norm.attrs["amp_floor"] = str(AMP_FLOOR)
+        ds_out_norm.attrs["source"] = "ERA5 daily mean pressure level data"
+        ds_out_norm.attrs["created"] = datetime.now().isoformat()
+        
+        ds_out_norm.to_netcdf(output_path_norm)
+        print(f"  Saved (norm): {output_path_norm}")
+    
+    elapsed = datetime.now() - start_time
+    print(f"\n{'='*70}")
+    print(f"All ERA5 reconstructions completed in {elapsed}")
+    print(f"Output directory: {OUT_DIR}")
+    print("="*70)
+
+
+def run_all():
+    """Run both Part A and Part B (if enabled)."""
+    # Part A: MJO EOF analysis and event identification
     main()
+    # Part B: ERA5 field reconstruction (merged from 02b)
+    if RUN_ERA5_RECONSTRUCTION:
+        reconstruct_era5_fields()
+    else:
+        print("\n[SKIP] Part B: ERA5 reconstruction skipped (RUN_ERA5_RECONSTRUCTION=False)")
+        print("       Using existing normalized files in E:\\Datas\\Derived\\")
+
+
+if __name__ == "__main__":
+    run_all()

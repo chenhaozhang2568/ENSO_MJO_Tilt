@@ -1,14 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Calculate per-event tilt statistics and overall distribution.
+04_tilt_statistics.py: Step5 - 逐事件 Tilt 统计分析
 
-Inputs:
-- Tilt Daily: E:\\Datas\\ClimateIndex\\processed\\tilt_daily_step4_layermean_1979-2022.nc
-- Events List: E:\\Datas\\ClimateIndex\\processed\\mjo_events_step3_1979-2022.csv
+================================================================================
+功能描述：
+    本脚本计算每个 MJO 事件的 Tilt 统计量（均值、标准差、中位数等），
+    并生成 Tilt 分布直方图。
 
-Outputs:
-- per-event stats CSV: E:\\Datas\\ClimateIndex\\processed\\tilt_event_stats_1979-2022.csv
-- Histogram Figure: E:\\Projects\\ENSO_MJO_Tilt\\outputs\\figures\\tilt_event_distribution.png
+统计内容：
+    - 每事件 Tilt 均值、标准差、中位数、最小/最大值
+    - 有效 Tilt 天数统计
+    - 全样本 Tilt 分布直方图
+
+输入数据：
+    - 逐日 Tilt：tilt_daily_step4_layermean_1979-2022.nc
+    - MJO 事件列表：mjo_events_step3_1979-2022.csv
+
+输出：
+    - tilt_event_stats_1979-2022.csv：逐事件统计表
+    - tilt_event_distribution.png：Tilt 分布直方图
 """
 
 import numpy as np

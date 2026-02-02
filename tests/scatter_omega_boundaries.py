@@ -1,10 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Lon–Height scatter of DAILY layer west/east 0-boundaries (event days only),
-with marker size indicating point density (overlap).
+scatter_omega_boundaries.py: 逐层 omega 边界零点散点图
 
-You asked:
-- NOT a w cross-section shading plot.
+================================================================================
+功能描述：
+    本脚本绘制 MJO 事件日期内各气压层的 omega 零点边界（西边界/东边界）散点图，
+    用于可视化垂直倾斜的逐层分布和密度。
+
+主要特征：
+    1. 散点大小表示该位置的点密度（重叠程度）
+    2. 纵轴为气压高度，横轴为相对于对流中心的经度
+    3. 分别显示上升区西边界和东边界的零交叉点
+
+科学用途：
+    直接可视化 MJO 上升区在不同高度的经度位置变化，揭示垂直倾斜结构的离散特征。
 - For EACH event day, compute 4 boundary values:
     (LOW west, LOW east, UP west, UP east)
   where boundary is defined as the w'=0 crossing on each side of the ascent core.
@@ -12,7 +21,7 @@ You asked:
 - Loop all event days; points overlap; show "data amount" via marker size (density).
 
 Inputs:
-1) ERA5 omega bandpass lat-mean: w_bp(time, level, lon)  (Pa/s)
+1) ERA5 MJO-reconstructed omega: w_mjo_recon(time, pressure_level, lon)  (Pa/s)
    (lat-mean over 15S–15N already done in your pipeline)
 2) Step3 center track: center_lon_track(time)
 3) Event CSV: start_date, end_date (success events by default)
@@ -37,7 +46,7 @@ from matplotlib.ticker import MultipleLocator
 # USER PATHS (EDIT)
 # -----------------------------
 # ERA5 processed pressure-level product
-W_BP_NC = r"E:\Datas\ERA5\processed\pressure_level\era5_w_bp_latmean_1979-2022.nc"
+W_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_w_norm_1979-2022.nc"
 # Step3 + events are derived products
 STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
@@ -207,12 +216,18 @@ def binned_density_points(x: np.ndarray, y_value: float, bin_width: float) -> tu
 def main():
     rel_lon_grid = np.arange(REL_LON_MIN, REL_LON_MAX + 1e-9, REL_LON_STEP)
 
-    # Load omega
-    ds_w = xr.open_dataset(W_BP_NC)
-    w_var = pick_var(ds_w, ["w_bp", "omega_bp", "w", "omega", "w_anom"])
+    # Load omega (MJO reconstructed)
+    ds_w = xr.open_dataset(W_RECON_NC)
+    w_var = pick_var(ds_w, ["w_mjo_recon_norm", "w_mjo_recon", "w_bp", "omega_bp", "w", "omega", "w_anom"])
     w = ds_w[w_var]
-    if not all(d in w.dims for d in ["time", "level", "lon"]):
-        raise ValueError(f"{w_var} must have dims (time, level, lon). Got {w.dims}")
+    if not all(d in w.dims for d in ["time", "lon"]):
+        raise ValueError(f"{w_var} must have dims including time and lon. Got {w.dims}")
+    
+    # Handle pressure_level vs level dimension naming
+    if "pressure_level" in w.dims:
+        w = w.rename({"pressure_level": "level"})
+    if "level" not in w.dims:
+        raise ValueError(f"{w_var} must have a level dimension. Got {w.dims}")
 
     # lon to 0..360 sorted
     lon_w = w["lon"].values.astype(float)

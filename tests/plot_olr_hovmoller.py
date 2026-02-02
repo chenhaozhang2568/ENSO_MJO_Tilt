@@ -1,8 +1,23 @@
 
 # -*- coding: utf-8 -*-
 """
-Generate yearly OLR Hovmöller diagrams (Nov-Apr) for 1979-2022.
-Reference: Reconstructed OLR anomalies + MJO center track.
+plot_olr_hovmoller.py: OLR Hovmöller 时-经度图绘制脚本
+
+================================================================================
+功能描述：
+    本脚本生成逐年的 OLR 异常场 Hovmöller 图（时间-经度图），用于可视化 MJO 的东传过程。
+
+时间范围：
+    每年冬季（11月-次年4月），覆盖 1979-2022 年
+
+主要特征：
+    1. OLR 异常填色图（蓝色=对流增强，红色=对流抑制）
+    2. -15 W/m² 等值线（标记活跃对流区边界）
+    3. MJO 事件传播趋势线（基于对流中心轨迹线性拟合）
+    4. 每年输出一张独立图片
+
+输出目录：
+    outputs/figures/hovmoller/
 """
 
 import sys

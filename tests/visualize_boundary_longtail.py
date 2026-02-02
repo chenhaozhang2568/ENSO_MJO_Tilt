@@ -1,9 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Visualize long-tail behavior of MJO vertical-tilt boundaries (event days only).
+visualize_boundary_longtail.py: MJO 边界长尾效应可视化
 
-Goal:
-- Using your Step4 daily boundary outputs, show that occasional days have very west/east boundaries
+================================================================================
+功能描述：
+    本脚本可视化 MJO 垂直倾斜边界（上层/下层西边界/东边界）的分布特征，
+    特别关注长尾效应（极值天）的存在和影响。
+
+主要输出：
+    1. 边界变量的直方图密度分布（对数y轴）
+    2. ECDF 累积分布图（关注1-5%和95-99%分位数）
+    3. 高层 vs 低层边界散点图
+    4. 极端尾部天的时间序列点图
+    5. 极值日期列表 CSV 输出
+
+科学用途：
+    诊断为何 Tilt 指数会出现极大值，识别异常日期进行个案分析。
   (long-tail effect), for both lower and upper layers.
 
 Expected inputs (NetCDF from your Step4 script):

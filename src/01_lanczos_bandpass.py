@@ -1,21 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-E:\Projects\ENSO_MJO_Tilt\src\01_lanczos_bandpass.py
+01_lanczos_bandpass.py: Step2 - 20-100 天 Lanczos 带通滤波
 
-STEP 2 (Hu & Li 2021): 20–100-day Lanczos bandpass filtering
-- OLR (daily)
-- ERA5 U850 and U200 (daily 00Z snapshots from monthly files)
+================================================================================
+功能描述：
+    本脚本对 OLR 和 ERA5 数据进行 20-100 天 Lanczos 带通滤波，
+    提取 MJO 时间尺度信号，参考 Hu & Li (2021) 方法。
 
-Fixes included (based on your runtime errors):
-1) Only open months within START_DATE..END_DATE (won't touch other years)
-2) Rename latitude/longitude -> lat/lon when needed
-3) Avoid netCDF coord write errors by sanitizing coord encodings
-4) Fix apply_ufunc core-dim + multi-chunk error by rechunking time to a single chunk
-5) Fix MergeError conflicting 'level' coord by DROPPING scalar 'level' coord after selecting 850/200
+处理内容：
+    1. OLR 带通滤波：olr_bp（同时计算 olr_anom 原始异常场）
+    2. ERA5 U850/U200 带通滤波：u850_bp, u200_bp
+    3. ERA5 omega（w）带通滤波：w_bp（15°S-15°N 纬向平均）
+    4. ERA5 温度（T）和比湿（q）带通滤波（15°S-15°N 纬向平均）
 
-ADD (minimal change requested):
-6) Add ERA5 omega (w, Pa/s) bandpass output (lat-mean over 15S–15N to keep file size practical for later Step6/7).
-   - This only ADDS a new function and a new output file; existing steps are untouched.
+滤波参数：
+    周期带：20-100 天
+    窗口长度：121（Lanczos 窗宽 2M+1，M=60）
+
+输出文件：
+    - olr_bp_1979-2022.nc：带通 OLR + 原始异常
+    - era5_u850_u200_bp_1979-2022.nc：带通 U850/U200
+    - era5_w_bp_latmean_1979-2022.nc：带通 omega（纬向平均）
+    - era5_tq_bp_latmean_1979-2022.nc：带通 T 和 q（纬向平均）
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ import xarray as xr
 # USER PATHS (KEEP SAME)
 # ======================
 OLR_PATH = r"E:\Datas\ClimateIndex\raw\olr\olr.day.mean.nc"
-ERA5_DIR = r"E:\Datas\ERA5\raw\pressure_level\era5_1979-2022_quvwT_9_20 -180 20 180"
+ERA5_DIR = r"E:\Datas\ERA5\raw\pressure_level\era5_pl_mean_quvwT"
 
 OUT_OLR_DIR = Path(r"E:\Datas\ClimateIndex\processed")
 OUT_ERA5_PL_DIR = Path(r"E:\Datas\ERA5\processed\pressure_level")
@@ -263,7 +269,7 @@ def step2_filter_era5_u() -> Path:
     files: list[str] = []
     missing_or_empty: list[str] = []
     for ym in months:
-        f = os.path.join(ERA5_DIR, f"era5_pl_{ym}_00Z.nc")
+        f = os.path.join(ERA5_DIR, f"era5_pl_dailymean_quvwT_{ym}.nc")
         if os.path.exists(f) and os.path.getsize(f) > 0:
             files.append(f)
         else:
@@ -352,7 +358,7 @@ def step2_filter_era5_w() -> Path:
     files: list[str] = []
     missing_or_empty: list[str] = []
     for ym in months:
-        f = os.path.join(ERA5_DIR, f"era5_pl_{ym}_00Z.nc")
+        f = os.path.join(ERA5_DIR, f"era5_pl_dailymean_quvwT_{ym}.nc")
         if os.path.exists(f) and os.path.getsize(f) > 0:
             files.append(f)
         else:
@@ -424,6 +430,119 @@ def step2_filter_era5_w() -> Path:
     return out_path
 
 
+# ======================
+# ADD: STEP2: ERA5 T and q bandpass (lat-mean over 15S–15N)
+# Merged from 01b_bandpass_tq.py
+# ======================
+def step2_filter_era5_tq() -> Path:
+    """
+    Add-on for Step2:
+    - Read ERA5 'T' and 'q' from monthly files
+    - Subset time and region
+    - Meridional mean over 15S–15N
+    - Apply the SAME Lanczos bandpass along time
+    Output dims: (time, level, lon)  [lat removed by mean]
+    """
+    print("="*70)
+    print("Bandpass filtering ERA5 T and q (20-100 day)")
+    print("="*70)
+    
+    # Use same lat band as omega for T/q
+    TQ_LATMEAN_MIN, TQ_LATMEAN_MAX = -15.0, 15.0
+    
+    months = _months_between(START_DATE, END_DATE)
+    
+    files: list[str] = []
+    missing_or_empty: list[str] = []
+    for ym in months:
+        f = os.path.join(ERA5_DIR, f"era5_pl_dailymean_quvwT_{ym}.nc")
+        if os.path.exists(f) and os.path.getsize(f) > 0:
+            files.append(f)
+        else:
+            missing_or_empty.append(f)
+
+    if missing_or_empty:
+        print("\n[WARNING] Missing or empty ERA5 monthly files in requested range (will cause gaps):")
+        for m in missing_or_empty:
+            print("  -", m)
+        print()
+
+    if not files:
+        raise FileNotFoundError("No non-empty ERA5 monthly files found for the requested date range.")
+
+    print(f"Loading {len(files)} monthly files...")
+
+    ds = xr.open_mfdataset(
+        files,
+        combine="by_coords",
+        engine="netcdf4",
+        parallel=False,
+        chunks={"time": 31},
+    )
+
+    ds = _rename_latlon_if_needed(ds)
+
+    tname = _guess_time_name(ds)
+    lname = _guess_level_name(ds)
+    if tname != "time":
+        ds = ds.rename({tname: "time"})
+    if lname != "level":
+        ds = ds.rename({lname: "level"})
+
+    ds = _to_lon_180(ds)
+    ds = ds.sel(time=slice(START_DATE, END_DATE))
+
+    # Lat slice (ERA5 has decreasing lat)
+    lat_vals = ds["lat"].values
+    if lat_vals.size >= 2 and (lat_vals[1] - lat_vals[0]) < 0:
+        ds_subset = ds.sel(lat=slice(TQ_LATMEAN_MAX, TQ_LATMEAN_MIN))
+    else:
+        ds_subset = ds.sel(lat=slice(TQ_LATMEAN_MIN, TQ_LATMEAN_MAX))
+
+    # Get bandpass weights
+    w_bp = lanczos_bandpass_weights(PERIOD_LOW, PERIOD_HIGH, BANDPASS_WINDOW)
+
+    # Process T
+    print("\nProcessing T...")
+    t_var = ds_subset["t"]  # (time, level, lat, lon)
+    t_latmean = t_var.mean("lat", skipna=True)  # (time, level, lon)
+    print(f"  Shape after lat-mean: {t_latmean.shape}")
+
+    t_bp = apply_fir_convolution_along_time(t_latmean, w_bp, "time")
+    t_bp = t_bp.rename("t_bp")
+    print(f"  Bandpass complete, NaN edges: {int((BANDPASS_WINDOW-1)/2)} days each side")
+
+    # Process q
+    print("\nProcessing q...")
+    q_var = ds_subset["q"]
+    q_latmean = q_var.mean("lat", skipna=True)
+    print(f"  Shape after lat-mean: {q_latmean.shape}")
+
+    q_bp = apply_fir_convolution_along_time(q_latmean, w_bp, "time")
+    q_bp = q_bp.rename("q_bp")
+    print(f"  Bandpass complete")
+
+    # Build output
+    out = xr.Dataset({
+        "t_bp": t_bp,
+        "q_bp": q_bp,
+    })
+
+    out["t_bp"].attrs["filter"] = f"Lanczos bandpass {PERIOD_LOW:.0f}-{PERIOD_HIGH:.0f} day"
+    out["t_bp"].attrs["lat_mean_band"] = f"{TQ_LATMEAN_MIN}..{TQ_LATMEAN_MAX}"
+    out["q_bp"].attrs["filter"] = f"Lanczos bandpass {PERIOD_LOW:.0f}-{PERIOD_HIGH:.0f} day"
+    out["q_bp"].attrs["lat_mean_band"] = f"{TQ_LATMEAN_MIN}..{TQ_LATMEAN_MAX}"
+
+    out = _sanitize_coords_for_netcdf(out)
+
+    out_path = OUT_ERA5_PL_DIR / f"era5_tq_bp_latmean_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+    print(f"\nSaving to: {out_path}")
+    out.to_netcdf(out_path, engine="netcdf4", encoding=_encoding_for_dataset(out))
+    print("Done!")
+
+    return out_path
+
+
 def main():
     p1 = step2_filter_olr()
     print("Saved:", p1)
@@ -432,6 +551,9 @@ def main():
     # ADD: omega (w) bandpass
     p3 = step2_filter_era5_w()
     print("Saved:", p3)
+    # ADD: T and q bandpass (merged from 01b)
+    p4 = step2_filter_era5_tq()
+    print("Saved:", p4)
 
 
 if __name__ == "__main__":

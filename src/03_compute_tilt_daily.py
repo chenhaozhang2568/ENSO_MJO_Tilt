@@ -1,17 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-Step4: compute daily tilt(t) from ERA5 w' (bandpass) using Step3 convective center track.
+03_compute_tilt_daily.py: Step4 - 逐日 MJO Tilt 指数计算
 
-Inputs:
-- Step3 NC: center_lon_track(time)
-- ERA5 w bandpass latmean: w_bp(level, lon, time)
+================================================================================
+功能描述：
+    本脚本基于 ERA5 带通滤波 omega（w'）和 Step3 对流中心轨迹，
+    计算逐日 MJO 垂直倾斜（Tilt）指数。
 
-Outputs:
-- tilt_daily_step4_1979-2022.nc
+Tilt 定义：
+    Tilt = 低层上升区西边界 - 高层上升区西边界（相对经度，单位：°）
+    
+    正值表示"低层偏东、高层偏西"的典型 MJO 后倾结构。
 
-Run:
-cd /d E:\Projects\ENSO_MJO_Tilt
-python src\04_compute_tilt_daily_step4.py
+层次定义：
+    低层：1000-600 hPa（层平均）
+    高层：400-200 hPa（层平均）
+
+输入数据：
+    - Step3 输出：center_lon_track（对流中心轨迹）
+    - ERA5 带通 omega：w_bp（纬向平均）
+
+输出：
+    - tilt_daily_step4_layermean_1979-2022.nc
 """
 
 from __future__ import annotations
@@ -26,7 +36,8 @@ from pathlib import Path
 # ======================
 STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
-ERA5_W_LATMEAN = r"E:\Datas\ERA5\processed\pressure_level\era5_w_bp_latmean_1979-2022.nc"
+# Use normalized omega from 02_mvEOF.py output (already MJO reconstructed + amp normalized)
+W_NORM_NC = r"E:\Datas\Derived\era5_mjo_recon_w_norm_1979-2022.nc"
 OUT_NC = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
 
 
@@ -53,7 +64,7 @@ EDGE_PAD_DEG  = 2.5  # 边界留余量（度）
 # pivot 仍可保留：用来锁定“从哪里向外扫”
 PIVOT_DELTA_DEG = 10.0
 MIN_VALID_POINTS = 7
-OLR_MIN_THRESH = -15.0
+OLR_MIN_THRESH = -10.0
 ACTIVE_ONLY = False
 
 
@@ -176,61 +187,6 @@ def _ascent_center_from_profile(
     return (west, east, center, wmin)
 
 
-def _reconstruct_by_pc12_regression(
-    w_time_lon: xr.DataArray,
-    pc1: xr.DataArray,
-    pc2: xr.DataArray,
-    winter_mask: np.ndarray
-) -> xr.DataArray:
-    """
-    Reconstruct w(time,lon) using linear regression on PC1/PC2:
-      w_hat(t,lon) = a(lon) + b1(lon)*pc1(t) + b2(lon)*pc2(t)
-
-    Minimal implementation: loop over lon (typically small), robust to NaNs.
-    """
-    # ensure aligned dims
-    w_time_lon = w_time_lon.transpose("time", "lon")
-    pc1 = pc1.transpose("time")
-    pc2 = pc2.transpose("time")
-
-    time = w_time_lon["time"].values
-    # lon = w_time_lon["lon"].values.astype(float)
-
-    w_np = w_time_lon.values.astype(float)   # (T,L)
-    pc1_np = pc1.values.astype(float)        # (T,)
-    pc2_np = pc2.values.astype(float)        # (T,)
-    T, L = w_np.shape
-
-    out = np.full((T, L), np.nan, dtype=float)
-
-    # precompute pc finite + winter
-    base_mask = winter_mask & np.isfinite(pc1_np) & np.isfinite(pc2_np)
-
-    for j in range(L):
-        y = w_np[:, j]
-        m = base_mask & np.isfinite(y)
-        if m.sum() < 10:
-            continue
-
-        # X = [1, pc1, pc2]
-        X = np.column_stack([np.ones(m.sum(), dtype=float), pc1_np[m], pc2_np[m]])
-        yy = y[m]
-
-        # least squares
-        beta, _, _, _ = np.linalg.lstsq(X, yy, rcond=None)  # (3,)
-
-        # reconstruct for all times where pc1/pc2 finite
-        mt = np.isfinite(pc1_np) & np.isfinite(pc2_np)
-        Xall = np.column_stack([np.ones(mt.sum(), dtype=float), pc1_np[mt], pc2_np[mt]])
-        out[mt, j] = beta[1] * pc1_np[mt] + beta[2] * pc2_np[mt]
-
-    return xr.DataArray(
-        out.astype(np.float32),
-        coords={"time": w_time_lon["time"], "lon": w_time_lon["lon"]},
-        dims=("time", "lon"),
-        name=f"{w_time_lon.name}_mjo_recon"
-    )
-
 
 
 def main():
@@ -248,35 +204,38 @@ def main():
     t3 = pd.to_datetime(ds3["time"].values)
     center = ds3["center_lon_track"].astype(float)
     olr_center = ds3["olr_center_track"].astype(float)
-    pc1 = ds3["pc1"].astype(float)
-    pc2 = ds3["pc2"].astype(float)
-    amp = ds3["amp"].astype(float)
+    amp = ds3["amp"].astype(float)  # Only need amp for filtering, not for reconstruction
 
-    # --- load ERA5 w (latmean) ---
-    dsw = xr.open_dataset(ERA5_W_LATMEAN, engine="netcdf4").sel(time=slice(START_DATE, END_DATE))
-
-    if "w_bp" not in dsw:
-        raise RuntimeError("ERA5 w file missing variable: w_bp")
-    if "level" not in dsw["w_bp"].dims:
-        raise RuntimeError("w_bp has no 'level' dimension")
-    if "lon" not in dsw["w_bp"].dims:
-        raise RuntimeError("w_bp has no 'lon' dimension")
-    if "time" not in dsw["w_bp"].dims:
-        raise RuntimeError("w_bp has no 'time' dimension")
-
-    # subset lon to tracking window and select two levels
-    w = dsw["w_bp"].sel(lon=slice(TRACK_LON_MIN, TRACK_LON_MAX))
-    # level 在 ERA5 是从 1000 -> 200 递减，slice(1000,700) 在 xarray 是 OK 的（按坐标选）
+    # --- load normalized omega from 02_mvEOF.py output ---
+    print("Loading normalized omega from 02_mvEOF output...")
+    dsw = xr.open_dataset(W_NORM_NC, engine="netcdf4").sel(time=slice(START_DATE, END_DATE))
+    
+    w_var = "w_mjo_recon_norm"
+    if w_var not in dsw:
+        raise RuntimeError(f"Normalized omega file missing variable: {w_var}")
+    
+    w = dsw[w_var]  # (time, pressure_level, lon)
+    
+    # Rename pressure_level to level if needed
+    if "pressure_level" in w.dims:
+        w = w.rename({"pressure_level": "level"})
+    
+    # subset lon to tracking window
+    w = w.sel(lon=slice(TRACK_LON_MIN, TRACK_LON_MAX))
+    
+    # layer-mean: low (1000-600 hPa), up (400-200 hPa)
     w_low = w.sel(level=slice(LOW_LAYER[0], LOW_LAYER[1])).mean("level", skipna=True)
     w_up  = w.sel(level=slice(UP_LAYER[0],  UP_LAYER[1])).mean("level", skipna=True)
-
+    
     # make sure dims are (time, lon)
     w_low = w_low.transpose("time", "lon")
     w_up  = w_up.transpose("time", "lon")
+    
+    print(f"  w_low shape: {w_low.shape}, w_up shape: {w_up.shape}")
 
     # align time with Step3 (inner intersection)
-    center_a, olr_center_a, pc1_a, pc2_a, amp_a, w_low_a, w_up_a = xr.align(
-        center, olr_center, pc1, pc2, amp, w_low, w_up, join="inner"
+    center_a, olr_center_a, amp_a, w_low_a, w_up_a = xr.align(
+        center, olr_center, amp, w_low, w_up, join="inner"
     )
     time = pd.to_datetime(center_a["time"].values)
     winter = _winter_np(time)
@@ -285,29 +244,12 @@ def main():
 
     lon = w_low_a["lon"].values.astype(float)
 
-    # ==========================================================
-    # NEW (requested): reconstruct w using pc1/pc2, then normalize by amp
-    # ==========================================================
-    w_low_mjo = _reconstruct_by_pc12_regression(w_low_a, pc1_a, pc2_a, winter)
-    w_up_mjo  = _reconstruct_by_pc12_regression(w_up_a,  pc1_a, pc2_a, winter)
-
+    # Data is already normalized by amp in 02_mvEOF.py, use directly
+    w_low_norm = w_low_a.values.astype(float)
+    w_up_norm = w_up_a.values.astype(float)
+    
     amp_np_all = amp_a.values.astype(float)
     amp_ok = np.isfinite(amp_np_all) & (amp_np_all > AMP_EPS)
-
-    # NEW: amp floor to prevent small-amp amplification
-    amp_den = np.maximum(amp_np_all, float(AMP_FLOOR))
-
-    # normalize (time,lon): w_mjo_norm = w_mjo / max(amp, AMP_FLOOR)
-    w_low_mjo_np = w_low_mjo.values.astype(float)
-    w_up_mjo_np  = w_up_mjo.values.astype(float)
-
-    w_low_norm = np.full_like(w_low_mjo_np, np.nan, dtype=float)
-    w_up_norm  = np.full_like(w_up_mjo_np,  np.nan, dtype=float)
-
-    idx_amp = np.where(amp_ok)[0]
-    if idx_amp.size > 0:
-        w_low_norm[idx_amp, :] = w_low_mjo_np[idx_amp, :] / amp_den[idx_amp, None]
-        w_up_norm[idx_amp, :]  = w_up_mjo_np[idx_amp, :]  / amp_den[idx_amp, None]
 
     # pre-allocate
     n = time.size
@@ -386,7 +328,7 @@ def main():
         },
         attrs={
             "source_step3": STEP3_NC,
-            "source_w": ERA5_W_LATMEAN,
+            "source_w": W_NORM_NC,
             "levels": f"low_layer={LOW_LAYER[0]}..{LOW_LAYER[1]}hPa, up_layer={UP_LAYER[0]}..{UP_LAYER[1]}hPa",
             "lon_window": f"{TRACK_LON_MIN}..{TRACK_LON_MAX}",
             "zero_tol": str(ZERO_TOL),

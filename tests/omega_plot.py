@@ -1,23 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-omega图
+omega_plot.py: 垂直速度 (omega) 合成剖面图绘制
 
-Plot-only Step4:
-- Make a paper-like zonal-vertical cross section (rel_lon vs pressure) of mean omega'
-  over ACTIVE event days (winter + event_mask + [optional] active_mask).
-- NO daily tilt computation.
-- NO netcdf output.
+================================================================================
+功能描述：
+    本脚本绘制 MJO 活跃日期合成的纬向-垂直 omega'（滤波异常）剖面图，
+    用于可视化 MJO 的垂直环流结构。
 
-Inputs:
-- Step3 NC: center_lon_track(time), olr_center_track(time)
-- ERA5 w bandpass latmean: w_bp(time, level, lon)  (lat-mean already done)
+主要输出：
+    1. 相对经度 vs 气压高度的 omega 填色图
+    2. 上升区（负 omega）和下沉区（正 omega）分布
+    3. 高低层上升区的西东边界框（用于定义倾斜）
 
-Output:
-- composite cross-section figure png
+坐标系统：
+    - 横轴：相对于 MJO 对流中心的经度偏移（-90° 到 +90°）
+    - 纵轴：气压高度（1000-200 hPa）
 
-Run:
-cd /d E:\Projects\ENSO_MJO_Tilt
-python src\04_plot_omega_xsec_active_mean.py
+筛选条件：
+    - 冬季月份（11-4月）
+    - MJO 事件日
+    - MJO 活跃日（OLR < -15 W/m²，可选）
 """
 
 from __future__ import annotations
@@ -291,11 +293,10 @@ def main():
     ax.contour(rel_grid, lev_plot, comp_plot_s, levels=[0.0], colors="k", linewidths=1.2)
 
     # label contours every 0.01 (avoid clutter)
-    label_levels = np.arange(-vmax, vmax + 1e-9, 0.01)
-    # keep only those that exist in levels grid
-    label_levels = label_levels[np.isin(np.round(label_levels / STEP).astype(int),
-                                        np.round(levels / STEP).astype(int))]
-    ax.clabel(cs, levels=label_levels, inline=True, fontsize=7, fmt="%.3f")
+    # Use actual cs.levels to avoid floating-point mismatch
+    if hasattr(cs, 'levels') and len(cs.levels) > 0:
+        label_levels = [lv for lv in cs.levels if abs(lv) >= 0.01 - 1e-9]
+        ax.clabel(cs, levels=label_levels, inline=True, fontsize=7, fmt="%.3f")
 
     cbar = fig.colorbar(cf, ax=ax, pad=0.02, ticks=np.arange(-vmax, vmax + 1e-9, 0.01))
     cbar.set_label("Omega' (Pa s$^{-1}$)")
