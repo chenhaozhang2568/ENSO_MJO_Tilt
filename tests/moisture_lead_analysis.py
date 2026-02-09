@@ -192,12 +192,19 @@ def compute_lead_lag_correlation(q_925, olr, df, max_lag=15):
 
 
 def find_peak_lag(lags, corr):
-    """Find the lag with minimum correlation (q leads convection -> negative OLR)"""
+    """Find the lag with minimum correlation (q leads convection -> negative OLR)
+    
+    限制在 0-10 天范围搜索，避免找到边界值
+    """
     # Since high q should precede low OLR (strong convection), we look for most negative correlation
-    valid = np.isfinite(corr)
-    if not valid.any():
+    # 限制搜索范围在合理的领先天数 (0 到 10 天)
+    search_mask = (lags >= 0) & (lags <= 10) & np.isfinite(corr)
+    if not search_mask.any():
         return np.nan
-    min_idx = np.nanargmin(corr)
+    
+    # 在限制范围内找最小值
+    search_corr = np.where(search_mask, corr, np.inf)
+    min_idx = np.argmin(search_corr)
     return lags[min_idx]
 
 

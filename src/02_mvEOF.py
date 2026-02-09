@@ -1139,6 +1139,199 @@ def reconstruct_era5_fields():
     print("="*70)
 
 
+# ======================
+# PART C: ERA5 3D 场重建（保留纬度维度）
+# ======================
+ERA5_3D_RECON_VARIABLES = ["u", "q", "w", "t"]  # 只重构 3D 可视化需要的变量
+
+
+def _load_era5_for_recon_3d(var: str, time_index: pd.DatetimeIndex) -> xr.DataArray:
+    """
+    Load ERA5 monthly files for one variable WITHOUT latitude averaging.
+    Returns DataArray with dims (time, pressure_level, lat, lon).
+    """
+    print(f"  Loading ERA5 {var} (keeping lat dimension)...")
+    
+    ym_set = set()
+    for t in time_index:
+        ym_set.add((t.year, t.month))
+    ym_list = sorted(ym_set)
+    
+    arrays = []
+    for year, month in ym_list:
+        fpath = ERA5_DIR / f"era5_pl_dailymean_quvwT_{year}{month:02d}.nc"
+        if not fpath.exists():
+            print(f"    WARNING: {fpath.name} not found, skipping")
+            continue
+        ds = xr.open_dataset(fpath)
+        ds = _rename_latlon_if_needed(ds)
+        ds = _to_lon_180(ds)
+        
+        # Select latitude band but DO NOT average
+        lat_band = LAT_BAND
+        da = ds[var].sel(lat=slice(lat_band[1], lat_band[0]))  # ERA5 has decreasing lat
+        # NO latitude averaging here - keep (time, level, lat, lon)
+        arrays.append(da)
+    
+    combined = xr.concat(arrays, dim="time")
+    combined = combined.sel(time=time_index, method="nearest")
+    combined = combined.assign_coords(time=time_index)
+    
+    print(f"    Shape: {combined.shape}")
+    return combined
+
+
+def _reconstruct_era5_field_3d(
+    field: xr.DataArray,
+    pc1: np.ndarray,
+    pc2: np.ndarray,
+    winter_mask: np.ndarray
+) -> xr.DataArray:
+    """
+    Reconstruct field using PC1/PC2 regression, keeping latitude dimension.
+    
+    Input field dims: (time, level, lat, lon)
+    Output: same dims, MJO-reconstructed
+    """
+    time_coord = field["time"]
+    level_coord = field["pressure_level"]
+    lat_coord = field["lat"]
+    lon_coord = field["lon"]
+    
+    T, L, Y, X = field.shape  # time, level, lat, lon
+    out = np.full((T, L, Y, X), np.nan, dtype=np.float32)
+    
+    pc_valid = np.isfinite(pc1) & np.isfinite(pc2)
+    train_mask = winter_mask & pc_valid
+    
+    # Progress tracking
+    total_points = L * Y * X
+    processed = 0
+    
+    # Loop over levels, latitudes, and longitudes
+    for lev_idx in range(L):
+        for lat_idx in range(Y):
+            for lon_idx in range(X):
+                y = field.values[:, lev_idx, lat_idx, lon_idx].astype(float)
+                m = train_mask & np.isfinite(y)
+                
+                if m.sum() < 10:
+                    continue
+                
+                X_train = np.column_stack([pc1[m], pc2[m]])
+                y_train = y[m]
+                
+                try:
+                    beta, _, _, _ = np.linalg.lstsq(X_train, y_train, rcond=None)
+                    out[pc_valid, lev_idx, lat_idx, lon_idx] = (
+                        beta[0] * pc1[pc_valid] + beta[1] * pc2[pc_valid]
+                    )
+                except:
+                    pass
+                
+                processed += 1
+        
+        # Progress update per level
+        pct = (lev_idx + 1) / L * 100
+        print(f"    Level {lev_idx+1}/{L} done ({pct:.0f}%)")
+    
+    return xr.DataArray(
+        out,
+        coords={"time": time_coord, "pressure_level": level_coord, "lat": lat_coord, "lon": lon_coord},
+        dims=("time", "pressure_level", "lat", "lon"),
+        name=f"{field.name}_mjo_recon_3d"
+    )
+
+
+def reconstruct_era5_fields_3d():
+    """
+    Part C: Reconstruct ERA5 fields WITH latitude dimension for 3D visualization.
+    
+    Output: era5_mjo_recon_{var}_norm_3d_*.nc with dims (time, level, lat, lon)
+    
+    Skips if output file already exists.
+    """
+    print("\n" + "="*70)
+    print("Part C: ERA5 3D Reconstruction (keeping latitude)")
+    print("="*70)
+    start_time = datetime.now()
+    
+    # Load PC data
+    step3_nc = OUT_DIR / f"mjo_mvEOF_step3_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+    if not step3_nc.exists():
+        print(f"[ERROR] Step3 output not found: {step3_nc}")
+        return
+    
+    print("Loading PC1/PC2 and amp from Step3...")
+    ds_pc = xr.open_dataset(step3_nc)
+    pc1 = ds_pc["pc1"]
+    pc2 = ds_pc["pc2"]
+    amp = ds_pc["amp"]
+    time_index = pd.to_datetime(pc1["time"].values)
+    
+    pc1_np = pc1.values.astype(float)
+    pc2_np = pc2.values.astype(float)
+    amp_np = amp.values.astype(float)
+    winter = np.array([t.month in WINTER_MONTHS for t in time_index])
+    
+    AMP_FLOOR = 1.0
+    amp_safe = np.maximum(amp_np, AMP_FLOOR)
+    
+    print(f"Time range: {time_index[0].strftime('%Y-%m-%d')} to {time_index[-1].strftime('%Y-%m-%d')}")
+    print(f"Total days: {len(time_index)}, Winter days: {winter.sum()}")
+    
+    for var in ERA5_3D_RECON_VARIABLES:
+        output_path_norm = OUT_DIR / f"era5_mjo_recon_{var}_norm_3d_{START_DATE[:4]}-{END_DATE[:4]}.nc"
+        
+        # === Check if file already exists ===
+        if output_path_norm.exists():
+            print(f"\n[SKIP] {var}: 3D normalized file already exists: {output_path_norm.name}")
+            continue
+        
+        print(f"\n{'='*50}")
+        print(f"Processing 3D: {var}")
+        print("="*50)
+        
+        # Load ERA5 data (without lat averaging)
+        field = _load_era5_for_recon_3d(var, time_index)
+        
+        # Reconstruct
+        print(f"  Reconstructing (this may take a while)...")
+        recon = _reconstruct_era5_field_3d(field, pc1_np, pc2_np, winter)
+        
+        nan_ratio = float(np.isnan(recon.values).mean())
+        print(f"  NaN ratio: {nan_ratio:.4f}")
+        
+        # Normalize by MJO amplitude
+        recon_np = recon.values.astype(float)
+        # Broadcast amp_safe from (time,) to (time, level, lat, lon)
+        recon_norm_np = recon_np / amp_safe[:, None, None, None]
+        
+        recon_norm = xr.DataArray(
+            recon_norm_np.astype(np.float32),
+            coords=recon.coords,
+            dims=recon.dims,
+            name=f"{var}_mjo_recon_norm_3d"
+        )
+        
+        ds_out_norm = xr.Dataset({
+            f"{var}_mjo_recon_norm_3d": recon_norm
+        })
+        ds_out_norm.attrs["description"] = f"MJO-reconstructed {var} field (3D with lat), normalized by MJO amplitude"
+        ds_out_norm.attrs["method"] = "field_norm = (b1*pc1 + b2*pc2) / max(amp, 1.0)"
+        ds_out_norm.attrs["reference"] = "For 3D visualization (lon-lat-height)"
+        ds_out_norm.attrs["source"] = "ERA5 daily mean pressure level data"
+        ds_out_norm.attrs["created"] = datetime.now().isoformat()
+        
+        ds_out_norm.to_netcdf(output_path_norm)
+        print(f"  Saved: {output_path_norm}")
+    
+    elapsed = datetime.now() - start_time
+    print(f"\n{'='*70}")
+    print(f"3D ERA5 reconstructions completed in {elapsed}")
+    print("="*70)
+
+
 def run_all():
     """Run both Part A and Part B (if enabled)."""
     # Part A: MJO EOF analysis and event identification
@@ -1153,3 +1346,4 @@ def run_all():
 
 if __name__ == "__main__":
     run_all()
+

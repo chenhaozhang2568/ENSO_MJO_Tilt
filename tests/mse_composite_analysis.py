@@ -139,7 +139,7 @@ def load_data():
     return mse_da, df_events, lon, levels
 
 
-def create_composite(mse_da, df_events, lon, levels, lon_half_width=60, normalize_by_amp=True):
+def create_composite(mse_da, df_events, lon, levels, lon_range=(-90, 180), normalize_by_amp=True):
     """
     Create MSE composite in relative longitude space.
     Center each day's MSE field on MJO convective center.
@@ -151,8 +151,8 @@ def create_composite(mse_da, df_events, lon, levels, lon_half_width=60, normaliz
     
     lon_360 = np.mod(lon, 360)
     dlon = np.abs(lon[1] - lon[0])
-    n_rel_bins = int(2 * lon_half_width / dlon) + 1
-    rel_lons = np.linspace(-lon_half_width, lon_half_width, n_rel_bins)
+    n_rel_bins = int((lon_range[1] - lon_range[0]) / dlon) + 1
+    rel_lons = np.linspace(lon_range[0], lon_range[1], n_rel_bins)
     
     composites = {}
     
@@ -249,7 +249,7 @@ def plot_mse_composites(composites, rel_lons, levels):
             ax.set_ylabel("Pressure Level (hPa)")
         ax.set_title(f"({chr(97+i)}) {phase}", fontsize=12, fontweight='bold')
         ax.invert_yaxis()
-        ax.set_xlim(-60, 60)
+        ax.set_xlim(-90, 180)
         ax.legend(loc='upper right', fontsize=8)
         ax.grid(linestyle='--', alpha=0.3)
     
@@ -261,6 +261,61 @@ def plot_mse_composites(composites, rel_lons, levels):
                  fontsize=14, fontweight='bold', y=1.02)
     
     out_path = FIG_DIR / "mse_height_longitude_composite.png"
+    plt.savefig(out_path, bbox_inches='tight')
+    print(f"  Saved: {out_path}")
+    plt.close()
+
+
+def plot_mse_diff(composites, rel_lons, levels):
+    """Plot MSE difference between ENSO phases (pairwise comparison)"""
+    print("\nPlotting MSE difference composites...")
+    
+    diff_pairs = [
+        ('El Nino', 'La Nina', '(a) El Nino - La Nina'),
+        ('El Nino', 'Neutral', '(b) El Nino - Neutral'),
+        ('La Nina', 'Neutral', '(c) La Nina - Neutral'),
+    ]
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=150, sharey=True)
+    
+    # Calculate differences and find common colorbar range
+    diffs = []
+    for p1, p2, _ in diff_pairs:
+        diff = composites[p1] - composites[p2]
+        diffs.append(diff)
+    
+    all_diff = np.concatenate([d[np.isfinite(d)].flatten() for d in diffs])
+    vmax = np.percentile(np.abs(all_diff), 95)
+    vmin = -vmax
+    
+    for i, ((p1, p2, title), diff) in enumerate(zip(diff_pairs, diffs)):
+        ax = axes[i]
+        
+        # Contour plot with symmetric colorbar
+        cf = ax.contourf(rel_lons, levels, diff, levels=np.linspace(-vmax, vmax, 21), 
+                         cmap='RdBu_r', extend='both')
+        cs = ax.contour(rel_lons, levels, diff, levels=[-50, 0, 50], colors='k', 
+                        linewidths=0.8, alpha=0.7)
+        
+        # Mark convective center
+        ax.axvline(0, color='limegreen', linewidth=3, alpha=0.9)
+        
+        ax.set_xlabel("Relative Longitude (°)")
+        if i == 0:
+            ax.set_ylabel("Pressure Level (hPa)")
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.invert_yaxis()
+        ax.set_xlim(-90, 180)
+        ax.grid(linestyle='--', alpha=0.3)
+    
+    # Colorbar
+    cbar = fig.colorbar(cf, ax=axes, orientation='vertical', shrink=0.8, pad=0.02)
+    cbar.set_label('MSE Difference (J/kg)', fontsize=11)
+    
+    plt.suptitle("MSE Difference Between ENSO Phases", 
+                 fontsize=14, fontweight='bold', y=1.02)
+    
+    out_path = FIG_DIR / "mse_height_longitude_diff.png"
     plt.savefig(out_path, bbox_inches='tight')
     print(f"  Saved: {out_path}")
     plt.close()
@@ -315,7 +370,7 @@ def plot_summary(composites, rel_lons, levels):
     ax1.set_title("(a) Lower Troposphere MSE (700-1000 hPa avg)", fontsize=12, fontweight='bold')
     ax1.legend(loc='upper right')
     ax1.grid(linestyle='--', alpha=0.3)
-    ax1.set_xlim(-60, 60)
+    ax1.set_xlim(-90, 180)
     
     # =====================
     # Panel 2: MSE peak position bar chart
@@ -355,6 +410,7 @@ def main():
     results = analyze_mse_leading(composites, rel_lons, levels)
     
     plot_mse_composites(composites, rel_lons, levels)
+    plot_mse_diff(composites, rel_lons, levels)
     plot_summary(composites, rel_lons, levels)
     
     print("\n" + "="*70)

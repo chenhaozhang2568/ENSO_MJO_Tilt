@@ -19,7 +19,7 @@ omega_plot.py: 垂直速度 (omega) 合成剖面图绘制
 筛选条件：
     - 冬季月份（11-4月）
     - MJO 事件日
-    - MJO 活跃日（OLR < -15 W/m²，可选）
+    - MJO 活跃日（OLR < -10 W/m²，可选）
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ END_DATE   = "2022-12-31"
 WINTER_MONTHS = {11, 12, 1, 2, 3, 4}
 
 # active definition from Step3 track
-OLR_MIN_THRESH = -15.0
+OLR_MIN_THRESH = -10.0
 ACTIVE_ONLY = True  # True: only days with olr_center_track <= thresh; False: ignore active filter
 
 # --- layer definition (hPa) for boxes only ---

@@ -12,7 +12,7 @@ plot_olr_hovmoller.py: OLR Hovmöller 时-经度图绘制脚本
 
 主要特征：
     1. OLR 异常填色图（蓝色=对流增强，红色=对流抑制）
-    2. -15 W/m² 等值线（标记活跃对流区边界）
+    2. -10 W/m² 等值线（标记活跃对流区边界）
     3. MJO 事件传播趋势线（基于对流中心轨迹线性拟合）
     4. 每年输出一张独立图片
 
@@ -37,7 +37,7 @@ sys.path.append(str(project_root))
 STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 FAILED_EVENTS_CSV = r"E:\Datas\Derived\mjo_failed_events_step3_1979-2022.csv"
-OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\hovmoller_yearly_olr_recon_contour-15_1979-2022")
+OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\hovmoller_yearly_olr_recon_1979-2022")
 
 # Settings
 START_YEAR = 1979
@@ -48,7 +48,7 @@ XTICK_LOCS = [20, 60, 100, 140, 180, 220]
 XTICK_LABELS = ["20E", "60E", "100E", "140E", "180", "140W"]
 
 OLR_LEVELS = np.arange(-75, 70, 5) # -75 to 65
-CONTOUR_LEVEL = -15.0
+CONTOUR_LEVEL = -10.0
 
 def setup_colormap():
     """
@@ -227,7 +227,7 @@ def plot_hovmoller(ds_sub, year, output_path):
     levels = norm.boundaries
     cf = ax.contourf(lon, time, data.values, levels=levels, cmap=cmap, norm=norm, extend='both')
     
-    # --- 2. Contours (-15 W/m2) ---
+    # --- 2. Contours (-10 W/m2) ---
     cs = ax.contour(lon, time, data.values, levels=[CONTOUR_LEVEL], colors=['blue'], linewidths=1.5)
     
     # --- 3. Trend Lines (Event-based) ---

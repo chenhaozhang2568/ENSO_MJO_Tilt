@@ -56,13 +56,13 @@ UP_LAYER  = (400.0, 200.0)    # inclusive slice: 400..200
 # 备选：UP_LAYER = (500.0, 200.0)
 
 
-# ---------- ZERO-crossing boundary ----------
-ZERO_TOL = 0.0      # Pa/s，容忍量：认为 w >= -ZERO_TOL 就“到 0 了”
-EDGE_N_CONSEC = 1    # 连续 N 个点都满足“到 0”才算出边界
-EDGE_PAD_DEG  = 2.5  # 边界留余量（度）
-
-# pivot 仍可保留：用来锁定“从哪里向外扫”
-PIVOT_DELTA_DEG = 10.0
+# ---------- HALF-MAX (FWHM-like) boundary ----------
+# 边界定义：ω 达到 HALF_MAX_FRACTION × ω_min 的位置
+# 类似光谱分析的半高宽 (Full Width at Half Maximum)
+# HALF_MAX_FRACTION = 0.5 表示边界处 ω = 50% × ω_min
+HALF_MAX_FRACTION = 0.5  # 50% = half-max (FWHM-like)
+EDGE_N_CONSEC = 1        # 连续 N 个点都满足阈值才算出边界
+PIVOT_DELTA_DEG = 10.0   # pivot 搜索范围
 MIN_VALID_POINTS = 7
 OLR_MIN_THRESH = -10.0
 ACTIVE_ONLY = False
@@ -93,54 +93,56 @@ def _mask_event_days(time: pd.DatetimeIndex, events_csv: str) -> np.ndarray:
             m[i0:i1+1] = True
     return m
 
-def _ascent_center_from_profile(
+def _ascent_boundary_by_half_max(
     rel_lon: np.ndarray,
     w: np.ndarray,
-    zero_tol: float,
-    pivot_delta: float,
-    n_consec: int,
-    pad: float
+    half_max_fraction: float = 0.5,
+    pivot_delta: float = 10.0,
+    n_consec: int = 1
 ):
     """
-    以 omega=0 作为东西边界（允许容忍量 zero_tol）：
-
-    定义：
-      inside(上升区)  : w < -zero_tol
-      outside(到0/非上升): w >= -zero_tol   （注意仍可能是微弱负值，但当作“到0”）
-
-    步骤：
-      1) pivot：在 [-pivot_delta,+pivot_delta] 内找 w 最小值（最强上升核）
-      2) 从 pivot 向西/东扫描：第一次出现 连续 n_consec 个点 outside => 边界取前一格（更靠近 pivot）
-      3) 若一侧始终找不到 outside（无 0 交点），边界取窗口边缘（表示上升区覆盖到窗口边界）
+    使用半高宽法 (FWHM-like) 定义边界，解决长尾效应：
+    
+    原理：
+      - 找到上升核心 (pivot)：ω 最小值位置
+      - 边界阈值 thr = half_max_fraction × ω_min（如 50% × ω_min）
+      - 从 pivot 向西/东扫描，第一次 ω >= thr 的位置即为边界
+    
+    类似光谱分析的 FWHM（Full Width at Half Maximum）：
+      - half_max_fraction = 0.5 对应半高宽
+      - 物理意义：边界处上升运动衰减到峰值的 50%
+    
     Returns: (west_rel, east_rel, center_rel, wmin)
     """
     m = np.isfinite(w) & np.isfinite(rel_lon)
     if m.sum() < MIN_VALID_POINTS:
         return (np.nan, np.nan, np.nan, np.nan)
-
+    
     rr = rel_lon[m].astype(float)
     ww = w[m].astype(float)
-
-    # --- pivot：0附近最强上升点 ---
+    
+    # --- 找 pivot：对流中心附近最强上升点 ---
     win = (rr >= -pivot_delta) & (rr <= pivot_delta)
     if win.any():
         j0 = int(np.nanargmin(ww[win]))
         pivot_idx = np.where(win)[0][j0]
     else:
         pivot_idx = int(np.nanargmin(ww))
-
+    
     wmin = float(ww[pivot_idx])
-    if (not np.isfinite(wmin)) or (wmin >= -abs(zero_tol)):
-        # pivot 都不明显为负（接近0/正），说明没有可靠上升核
+    if (not np.isfinite(wmin)) or (wmin >= 0):
+        # 没有上升运动
         return (np.nan, np.nan, np.nan, wmin)
-
-    thr0 = -abs(float(zero_tol))   # “到0”的判据：w >= thr0
-
+    
+    # 半高宽阈值：边界处 ω = half_max_fraction × ω_min
+    # 例如 half_max_fraction=0.5, ω_min=-0.02 => thr = -0.01
+    thr = float(half_max_fraction) * wmin  # wmin<0, 所以 thr<0
+    
     # ============ west edge ============
     outside = 0
     west_idx = None
     for i in range(pivot_idx, -1, -1):
-        if ww[i] >= thr0:
+        if ww[i] >= thr:  # 上升强度衰减到阈值以下
             outside += 1
         else:
             outside = 0
@@ -149,15 +151,15 @@ def _ascent_center_from_profile(
             cand = min(cand, pivot_idx)
             west_idx = cand
             break
-
+    
     if west_idx is None:
-        west_idx = 0
-
+        west_idx = 0  # 没找到边界，取窗口边缘
+    
     # ============ east edge ============
     outside = 0
     east_idx = None
     for i in range(pivot_idx, len(ww)):
-        if ww[i] >= thr0:
+        if ww[i] >= thr:
             outside += 1
         else:
             outside = 0
@@ -166,23 +168,17 @@ def _ascent_center_from_profile(
             cand = max(cand, pivot_idx)
             east_idx = cand
             break
-
+    
     if east_idx is None:
         east_idx = len(ww) - 1
-
+    
     west = float(rr[west_idx])
     east = float(rr[east_idx])
-
+    
     # 防御：噪声导致 west>east 直接判无效
     if not (np.isfinite(west) and np.isfinite(east)) or (west > east):
         return (np.nan, np.nan, np.nan, wmin)
-
-    # padding + clip
-    rr_min = float(np.nanmin(rr))
-    rr_max = float(np.nanmax(rr))
-    west = max(rr_min, west - float(pad))
-    east = min(rr_max, east + float(pad))
-
+    
     center = 0.5 * (west + east)
     return (west, east, center, wmin)
 
@@ -264,6 +260,7 @@ def main():
     up_wmin = np.full(n, np.nan, np.float32)
 
     tilt = np.full(n, np.nan, np.float32)
+    tilt_east = np.full(n, np.nan, np.float32)
 
     # load arrays (faster than per-day isel)
     c_np = center_a.values.astype(float)
@@ -293,21 +290,27 @@ def main():
         wl = w_low_norm[i, :]
         wu = w_up_norm[i, :]
 
-        lw, le, lc, lmin = _ascent_center_from_profile(
-            rel, wl, ZERO_TOL, PIVOT_DELTA_DEG, EDGE_N_CONSEC, EDGE_PAD_DEG
+        lw, le, lc, lmin = _ascent_boundary_by_half_max(
+            rel, wl, HALF_MAX_FRACTION, PIVOT_DELTA_DEG, EDGE_N_CONSEC
         )
-        uw, ue, uc, umin = _ascent_center_from_profile(
-            rel, wu, ZERO_TOL, PIVOT_DELTA_DEG, EDGE_N_CONSEC, EDGE_PAD_DEG
+        uw, ue, uc, umin = _ascent_boundary_by_half_max(
+            rel, wu, HALF_MAX_FRACTION, PIVOT_DELTA_DEG, EDGE_N_CONSEC
         )
 
         low_west[i], low_east[i], low_ctr[i], low_wmin[i] = lw, le, lc, lmin
         up_west[i],  up_east[i],  up_ctr[i],  up_wmin[i]  = uw, ue, uc, umin
 
-        # 用西边界定义 tilt：low_west - up_west
+        # 西侧 tilt：low_west - up_west
         if np.isfinite(lw) and np.isfinite(uw):
             tilt[i] = float(lw - uw)
         else:
             tilt[i] = np.nan
+        
+        # 东侧 tilt：low_east - up_east
+        if np.isfinite(le) and np.isfinite(ue):
+            tilt_east[i] = float(le - ue)
+        else:
+            tilt_east[i] = np.nan
 
     ds_out = xr.Dataset(
         {
@@ -320,7 +323,9 @@ def main():
             "up_center_rel": xr.DataArray(up_ctr, coords={"time": time}, dims=("time",)),
             "up_wmin": xr.DataArray(up_wmin, coords={"time": time}, dims=("time",)),
             "tilt": xr.DataArray(tilt, coords={"time": time}, dims=("time",),
-                         attrs={"desc": "tilt = low_west_rel - up_west_rel (deg)"}),
+                         attrs={"desc": "tilt = low_west_rel - up_west_rel (deg), 西侧倾斜"}),
+            "tilt_east": xr.DataArray(tilt_east, coords={"time": time}, dims=("time",),
+                         attrs={"desc": "tilt_east = low_east_rel - up_east_rel (deg), 东侧倾斜"}),
             "active_mask": xr.DataArray(active.astype(np.int8), coords={"time": time}, dims=("time",),
                             attrs={"desc": f"1 if olr_center_track <= {OLR_MIN_THRESH} else 0"}),
             "event_mask": xr.DataArray(eventmask.astype(np.int8), coords={"time": time}, dims=("time",),
@@ -331,10 +336,8 @@ def main():
             "source_w": W_NORM_NC,
             "levels": f"low_layer={LOW_LAYER[0]}..{LOW_LAYER[1]}hPa, up_layer={UP_LAYER[0]}..{UP_LAYER[1]}hPa",
             "lon_window": f"{TRACK_LON_MIN}..{TRACK_LON_MAX}",
-            "zero_tol": str(ZERO_TOL),
-            "edge_n_consec": str(EDGE_N_CONSEC),
-            "edge_pad_deg": str(EDGE_PAD_DEG),
-            "pivot_delta_deg": str(PIVOT_DELTA_DEG),
+            "boundary_method": "half_max_fwhm",
+            "half_max_fraction": str(HALF_MAX_FRACTION),
             "winter_months": ",".join(map(str, sorted(WINTER_MONTHS))),
             "time_range": f"{START_DATE}..{END_DATE}",
             "active_only": str(ACTIVE_ONLY),
