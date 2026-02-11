@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-boundary_position_by_enso.py: ENSO 分组的上/下层边界位置分析
+boundary_position_by_enso.py — ENSO 分组边界位置分析
 
-验证假设：La Nina 年高层西边界是否推得更远？
-
-分析内容：
-1. 低层西边界 (low_west) 在不同 ENSO 相的分布
-2. 高层西边界 (up_west) 在不同 ENSO 相的分布
-3. Tilt = low_west - up_west 的分解分析
+功能：
+    按 ENSO 相位分组，检验低层/高层西边界位置差异，
+    验证 La Niña 期间高层西边界是否更偏西的假设。
+输入：
+    tilt_daily_step4_layermean_1979-2022.nc, mjo_events_step3_1979-2022.csv,
+    oni.ascii.txt
+输出：
+    figures/boundary_analysis/boundary_position_by_enso.png
+用法：
+    python tests/boundary_position_by_enso.py
 """
 
 from __future__ import annotations
@@ -28,59 +32,11 @@ mpl.rcParams['axes.unicode_minus'] = False
 # ======================
 TILT_NC = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
-ONI_FILE = r"E:\Datas\ClimateIndex\raw\oni\oni.ascii.txt"
-OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\boundary_analysis")
+ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
+OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\boundary")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ENSO 阈值
-ONI_THRESHOLD = 0.5
 
-
-def load_oni():
-    """加载 ONI 指数"""
-    oni = pd.read_csv(ONI_FILE, sep=r'\s+', header=0)
-    month_map = {'DJF': 1, 'JFM': 2, 'FMA': 3, 'MAM': 4, 'AMJ': 5, 'MJJ': 6,
-                'JJA': 7, 'JAS': 8, 'ASO': 9, 'SON': 10, 'OND': 11, 'NDJ': 12}
-    records = []
-    for _, row in oni.iterrows():
-        seas = row['SEAS']
-        year = int(row['YR'])
-        anom = row['ANOM']
-        if seas in month_map and anom != -99.9:
-            month = month_map[seas]
-            records.append({'year': year, 'month': month, 'oni': anom})
-    oni_df = pd.DataFrame(records)
-    oni_df['date'] = pd.to_datetime(oni_df[['year', 'month']].assign(day=1))
-    return oni_df.set_index('date')['oni']
-
-
-def classify_enso(event_center_date, oni_series):
-    """根据事件中心时间分类 ENSO 相位"""
-    year = event_center_date.year
-    month = event_center_date.month
-    # 使用年月匹配
-    target = pd.Timestamp(year=year, month=month, day=1)
-    
-    # 尝试精确匹配
-    if target in oni_series.index:
-        oni_val = oni_series.loc[target]
-    else:
-        # 尝试找最近的月份
-        try:
-            idx = oni_series.index.get_indexer([target], method='nearest')[0]
-            if idx >= 0 and idx < len(oni_series):
-                oni_val = oni_series.iloc[idx]
-            else:
-                return None
-        except:
-            return None
-    
-    if oni_val >= ONI_THRESHOLD:
-        return 'El Nino'
-    elif oni_val <= -ONI_THRESHOLD:
-        return 'La Nina'
-    else:
-        return 'Neutral'
 
 
 def main():
@@ -97,11 +53,10 @@ def main():
     low_west = ds["low_west_rel"].values
     up_west = ds["up_west_rel"].values
     
-    # 加载事件
+    # 加载事件 + ENSO 分类
     events_df = pd.read_csv(EVENTS_CSV, parse_dates=["start_date", "end_date"])
-    
-    # 加载 ONI
-    oni_series = load_oni()
+    enso_stats = pd.read_csv(ENSO_STATS_CSV)
+    enso_map = dict(zip(enso_stats['event_id'], enso_stats['enso_phase']))
     
     print(f"  Tilt data: {len(time)} days")
     print(f"  Events: {len(events_df)}")
@@ -111,10 +66,13 @@ def main():
     
     event_stats = []
     for _, ev in events_df.iterrows():
+        eid = ev['event_id']
+        phase = enso_map.get(eid)
+        if phase is None:
+            continue
+        
         start = pd.Timestamp(ev['start_date'])
         end = pd.Timestamp(ev['end_date'])
-        center = start + (end - start) / 2
-        
         mask = (time >= start) & (time <= end)
         
         tilt_ev = tilt[mask]
@@ -126,13 +84,12 @@ def main():
         valid_uw = uw_ev[np.isfinite(uw_ev)]
         
         if len(valid_tilt) > 0:
-            enso = classify_enso(center, oni_series)
             event_stats.append({
-                'event_id': ev['event_id'],
+                'event_id': eid,
                 'start_date': start,
                 'end_date': end,
-                'center_date': center,
-                'enso_phase': enso,
+                'center_date': start + (end - start) / 2,
+                'enso_phase': phase,
                 'mean_tilt': np.mean(valid_tilt),
                 'mean_low_west': np.mean(valid_lw) if len(valid_lw) > 0 else np.nan,
                 'mean_up_west': np.mean(valid_uw) if len(valid_uw) > 0 else np.nan,

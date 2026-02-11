@@ -1,25 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-omega_plot.py: 垂直速度 (omega) 合成剖面图绘制
+omega_plot.py — 垂直速度 (omega) 合成剖面图
 
-================================================================================
-功能描述：
-    本脚本绘制 MJO 活跃日期合成的纬向-垂直 omega'（滤波异常）剖面图，
-    用于可视化 MJO 的垂直环流结构。
-
-主要输出：
-    1. 相对经度 vs 气压高度的 omega 填色图
-    2. 上升区（负 omega）和下沉区（正 omega）分布
-    3. 高低层上升区的西东边界框（用于定义倾斜）
-
-坐标系统：
-    - 横轴：相对于 MJO 对流中心的经度偏移（-90° 到 +90°）
-    - 纵轴：气压高度（1000-200 hPa）
-
-筛选条件：
-    - 冬季月份（11-4月）
-    - MJO 事件日
-    - MJO 活跃日（OLR < -10 W/m²，可选）
+功能：
+    合成 MJO 活跃日的纬向-垂直 omega（MJO 重构归一化场）剖面图，
+    叠加高低层上升区边界框以可视化垂直倾斜结构。
+输入：
+    era5_mjo_recon_w_norm_1979-2022.nc, mjo_mvEOF_step3_1979-2022.nc,
+    mjo_events_step3_1979-2022.csv
+输出：
+    figures/omega_xsec_active_mean_1979-2022.png
+用法：
+    python tests/omega_plot.py
 """
 
 from __future__ import annotations
@@ -38,11 +30,11 @@ from scipy.ndimage import gaussian_filter
 STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 
-# ERA5 processed pressure-level product
-ERA5_W_LATMEAN = r"E:\Datas\ERA5\processed\pressure_level\era5_w_bp_latmean_1979-2022.nc"
+# ERA5 MJO reconstructed, amplitude-normalized (Hu & Li 2021)
+W_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_w_norm_1979-2022.nc"
 
 # figure output
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\omega")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FIG = FIG_DIR / "omega_xsec_active_mean_1979-2022.png"
 
@@ -54,7 +46,7 @@ END_DATE   = "2022-12-31"
 WINTER_MONTHS = {11, 12, 1, 2, 3, 4}
 
 # active definition from Step3 track
-OLR_MIN_THRESH = -10.0
+OLR_MIN_THRESH = -15.0
 ACTIVE_ONLY = True  # True: only days with olr_center_track <= thresh; False: ignore active filter
 
 # --- layer definition (hPa) for boxes only ---
@@ -169,14 +161,17 @@ def main():
     center = ds3["center_lon_track"].astype(float)
     olr_center = ds3["olr_center_track"].astype(float)
 
-    # --- load ERA5 w (latmean) ---
-    dsw = xr.open_dataset(ERA5_W_LATMEAN, engine="netcdf4").sel(time=slice(START_DATE, END_DATE))
-    if "w_bp" not in dsw:
-        raise RuntimeError("ERA5 w file missing variable: w_bp")
-    if not set(["time", "level", "lon"]).issubset(set(dsw["w_bp"].dims)):
-        raise RuntimeError(f"w_bp dims must include time/level/lon, got: {dsw['w_bp'].dims}")
-
-    w = dsw["w_bp"]
+    # --- load ERA5 w (MJO recon norm) ---
+    dsw = xr.open_dataset(W_RECON_NC, engine="netcdf4").sel(time=slice(START_DATE, END_DATE))
+    w_var = "w_mjo_recon_norm"
+    if w_var not in dsw:
+        raise RuntimeError(f"ERA5 w file missing variable: {w_var}")
+    w = dsw[w_var]
+    # 统一 dim 名称
+    if "pressure_level" in w.dims:
+        w = w.rename({"pressure_level": "level"})
+    if not set(["time", "level", "lon"]).issubset(set(w.dims)):
+        raise RuntimeError(f"w dims must include time/level/lon, got: {w.dims}")
 
     # --- ensure lon is 0..360 increasing ---
     lon_raw = w["lon"].values.astype(float)

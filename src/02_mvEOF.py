@@ -61,7 +61,7 @@ END_DATE   = "2022-12-31"
 # RUN OPTIONS
 # ======================
 # 设置为 True 重新生成 ERA5 重构文件，False 跳过 Part B（使用已有数据）
-RUN_ERA5_RECONSTRUCTION = False
+RUN_ERA5_RECONSTRUCTION = True
 
 # ======================
 # PAPER-STYLE SETTINGS
@@ -75,7 +75,7 @@ MAX_WEST_JUMP_DEG = 5.0
 # ======================
 # EVENT CRITERIA
 # ======================
-OLR_MIN_THRESH = -10.0
+OLR_MIN_THRESH = -15.0
 MIN_EAST_DISP_DEG = 50.0
 AMP_THRESH = None
 
@@ -649,6 +649,13 @@ def main():
     pc1_scale = np.std(PCs_tr[:, 0]) or 1.0
     pc2_scale = np.std(PCs_tr[:, 1]) or 1.0
     print(f"  EOF computed. PC1 scale (training std): {pc1_scale:.3f}, PC2 scale: {pc2_scale:.3f}")
+
+    # ---- Variance fractions (for NCL-style reconstruction) ----
+    total_var = np.sum(X_tr ** 2)  # = sum(S_all²)
+    var_frac1 = _svals[0] ** 2 / total_var
+    var_frac2 = _svals[1] ** 2 / total_var
+    print(f"  Variance fractions: EOF1={var_frac1:.4f} ({var_frac1*100:.2f}%), EOF2={var_frac2:.4f} ({var_frac2*100:.2f}%)")
+    print(f"  Combined: {(var_frac1+var_frac2)*100:.2f}%")
     
     # ============================================================
     # 诊断 2: PC 标准化一致性检查（训练期 vs 全周期）
@@ -790,14 +797,19 @@ def main():
     pc1_full_centered = pc1 - pc1_winter_mean
     pc2_full_centered = pc2 - pc2_winter_mean
     
-    # MJO 信号 = beta1*PC1 + beta2*PC2（不含截距，用于追踪）
-    recon_anomaly = pc1_full_centered[:, None] * beta1[None, :] + pc2_full_centered[:, None] * beta2[None, :]
+    # MJO 信号：NCL 方差归一化方法 (Hu & Li style)
+    # olr_reg = (beta1*PC1/var_frac1 + beta2*PC2/var_frac2) / 2
+    recon_anomaly = (
+        pc1_full_centered[:, None] * beta1[None, :] / var_frac1
+        + pc2_full_centered[:, None] * beta2[None, :] / var_frac2
+    ) / 2.0
     recon_full = beta0[None, :] + recon_anomaly  # 完整重建（含气候态）
     
     valid_beta = np.isfinite(beta0) & np.isfinite(beta1) & np.isfinite(beta2)
     print(f"  Regression: {valid_beta.sum()}/{P} grid points (with intercept)")
     print(f"  Intercept (climatology) range: [{np.nanmin(beta0):.2f}, {np.nanmax(beta0):.2f}] W/m²")
     print(f"  OLR anomaly (MJO signal) range: [{np.nanmin(recon_anomaly):.2f}, {np.nanmax(recon_anomaly):.2f}] W/m²")
+    print(f"  Reconstruction scaling: /var_frac1={1/var_frac1:.2f}x, /var_frac2={1/var_frac2:.2f}x, /2")
     
     # ============================================================
     # 诊断 3: PC1 与 OLR 异常场的相关系数
@@ -880,6 +892,40 @@ def main():
     df_events, df_failed = _build_events_by_contour_track(
         time_index, contour_lon_w, contour_active_w, amp_np, winter_np
     )
+
+    # ---- 12b. Post-process center_lon_track: clamp jump outliers per event ----
+    # 对每个事件，检测 center_lon_track 的异常跳跃并钳位：
+    #   - 开头从东侧跳到西侧 → 开头钳位到 TRACK_LON_MIN (60°)
+    #   - 结尾突然跳离主序列 → 结尾钳位到 TRACK_LON_MAX (180°)
+    _MAX_JUMP_DEG = 20.0
+    center_track_np_fixed = center_track_np.copy()
+    all_ev_for_fix = pd.concat([df_events, df_failed], ignore_index=True) if not df_failed.empty else df_events.copy()
+    for _, ev_row in all_ev_for_fix.iterrows():
+        t0 = pd.Timestamp(ev_row['start_date'])
+        t1 = pd.Timestamp(ev_row['end_date'])
+        idx_pos = np.where((time_index >= t0) & (time_index <= t1))[0]
+        if len(idx_pos) < 2:
+            continue
+        seg = (center_track_np_fixed[idx_pos] + 360) % 360
+        # 开头钳位: 从前往后找第一个西向大跳跃（从东侧跳到西侧），将跳跃前的点钳位到 TRACK_LON_MIN
+        for i in range(len(seg) - 1):
+            if seg[i] - seg[i + 1] > _MAX_JUMP_DEG:  # 西向跳跃（经度突然减小）
+                seg[:i + 1] = TRACK_LON_MIN
+                break
+        # 结尾钳位: 从后往前找第一个西向大跳跃（从东侧跳回西侧），将跳跃后的点钳位到 TRACK_LON_MAX
+        for i in range(len(seg) - 1, 0, -1):
+            if seg[i - 1] - seg[i] > _MAX_JUMP_DEG:  # 西向跳跃（经度突然减小）
+                seg[i:] = TRACK_LON_MAX
+                break
+        center_track_np_fixed[idx_pos] = seg
+
+    center_track_da = xr.DataArray(
+        center_track_np_fixed, coords={"time": center_track_da["time"]},
+        dims=("time",), name="center_lon_track"
+    )
+    center_track_np = center_track_np_fixed
+    olr_center = _sample_olr_at_track_center(recon_da, center_track_np)
+    print(f"  center_lon_track jump-clamp applied to {len(all_ev_for_fix)} events")
 
     # ---- 13. Save Outputs ----
     out_nc = OUT_DIR / f"mjo_mvEOF_step3_{START_DATE[:4]}-{END_DATE[:4]}.nc"

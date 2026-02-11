@@ -1,30 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-intensity_effect_analysis.py: 假设2 - 强度效应验证
+intensity_effect_analysis.py — MJO 强度效应分析
 
-================================================================================
-功能描述：
-    本脚本验证 MJO 强度效应假设，分析 ENSO 不同相位期间 MJO 振幅是否存在显著差异。
-    
-科学问题：
-    - El Niño 和 La Niña 期间 MJO 的振幅（强度）是否有差异？
-    - MJO 强度与其结构倾斜之间是否存在关联？
-    
-物理机制：
-    强 MJO 具有更有组织的环流结构，可能表现出更标准化的垂直倾斜特征。
-    
-主要分析内容：
-    1. 逐日 MJO 振幅在三组 ENSO 相位中的分布对比
-    2. 事件平均振幅的 ENSO 分组统计
-    3. 箱线图、直方图可视化
-    4. t-检验统计显著性分析
-
-Inputs:
-- Step3 NC: amp (MJO amplitude = sqrt(PC1^2 + PC2^2))
-- Events CSV + ENSO classification
-
-Run:
-  python E:\\Projects\\ENSO_MJO_Tilt\\tests\\intensity_effect_analysis.py
+功能：
+    检验不同 ENSO 相位下 MJO 振幅是否存在显著差异，
+    分析 MJO 强度与垂直倾斜的关联。
+输入：
+    mjo_mvEOF_step3_1979-2022.nc, mjo_events_step3_1979-2022.csv,
+    tilt_event_stats_with_enso_1979-2022.csv
+输出：
+    figures/intensity_effect/intensity_effect_analysis.png
+用法：
+    python tests/intensity_effect_analysis.py
 """
 
 from __future__ import annotations
@@ -43,7 +30,7 @@ STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
 
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\intensity_effect")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\intensity")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ========================

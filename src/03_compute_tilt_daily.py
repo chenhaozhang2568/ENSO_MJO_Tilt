@@ -48,23 +48,25 @@ START_DATE = "1979-01-01"
 END_DATE   = "2022-12-31"
 WINTER_MONTHS = {11, 12, 1, 2, 3, 4}
 TRACK_LON_MIN = 0.0
-TRACK_LON_MAX = 180.0
+TRACK_LON_MAX = 240.0   # 东端扩展到 240°E（覆盖西太平洋以东）
 
 # --- layer-mean definition (hPa) ---
 LOW_LAYER = (1000.0, 600.0)   # inclusive slice: 1000..600
 UP_LAYER  = (400.0, 200.0)    # inclusive slice: 400..200
 # 备选：UP_LAYER = (500.0, 200.0)
+PRESSURE_WEIGHTED = False       # True=气压厚度加权层平均, False=等权重平均
 
 
 # ---------- HALF-MAX (FWHM-like) boundary ----------
 # 边界定义：ω 达到 HALF_MAX_FRACTION × ω_min 的位置
 # 类似光谱分析的半高宽 (Full Width at Half Maximum)
 # HALF_MAX_FRACTION = 0.5 表示边界处 ω = 50% × ω_min
-HALF_MAX_FRACTION = 0.5  # 50% = half-max (FWHM-like)
+HALF_MAX_FRACTION = 0.0  # 50% = half-max (FWHM-like)
 EDGE_N_CONSEC = 1        # 连续 N 个点都满足阈值才算出边界
+SMOOTH_WINDOW = 1        # 边界检测前滑动平均窗口（1=不平滑）
 PIVOT_DELTA_DEG = 10.0   # pivot 搜索范围
 MIN_VALID_POINTS = 7
-OLR_MIN_THRESH = -10.0
+OLR_MIN_THRESH = -15.0
 ACTIVE_ONLY = False
 
 
@@ -75,6 +77,30 @@ AMP_FLOOR = 1.0  # NEW: clamp amp for normalization (prevents small-amp blow-up)
 # ======================
 # helpers
 # ======================
+def _pressure_weighted_mean(da: xr.DataArray, layer_bounds: tuple) -> xr.DataArray:
+    """
+    气压厚度加权层平均。
+
+    每层权重 = 该层所代表的气压厚度 Δp（相邻层中点之差）。
+    最外两层的外侧边界取 layer_bounds 限定。
+
+    Parameters
+    ----------
+    da : xr.DataArray  含 'level' 维
+    layer_bounds : (p_top, p_bot)  层组的上下界 hPa，顺序不限
+    """
+    levels = da["level"].values.astype(float)
+    p_top = min(layer_bounds)
+    p_bot = max(layer_bounds)
+    n = len(levels)
+    dp = np.empty(n, dtype=float)
+    for k in range(n):
+        upper = 0.5 * (levels[k] + levels[k - 1]) if k > 0     else p_bot
+        lower = 0.5 * (levels[k] + levels[k + 1]) if k < n - 1 else p_top
+        dp[k] = abs(upper - lower)
+    weights = xr.DataArray(dp, dims=["level"], coords={"level": levels})
+    return da.weighted(weights).mean("level")
+
 def _winter_np(time_index: pd.DatetimeIndex) -> np.ndarray:
     return np.isin(time_index.month, list(WINTER_MONTHS)).astype(bool)
 
@@ -121,6 +147,11 @@ def _ascent_boundary_by_half_max(
     rr = rel_lon[m].astype(float)
     ww = w[m].astype(float)
     
+    # 滑动平均，滤除小尺度下沉间断（~10°窗口）
+    if SMOOTH_WINDOW > 1 and len(ww) >= SMOOTH_WINDOW:
+        kernel = np.ones(SMOOTH_WINDOW) / SMOOTH_WINDOW
+        ww = np.convolve(ww, kernel, mode='same')
+    
     # --- 找 pivot：对流中心附近最强上升点 ---
     win = (rr >= -pivot_delta) & (rr <= pivot_delta)
     if win.any():
@@ -153,7 +184,7 @@ def _ascent_boundary_by_half_max(
             break
     
     if west_idx is None:
-        west_idx = 0  # 没找到边界，取窗口边缘
+        return (np.nan, np.nan, np.nan, wmin)  # 没找到边界 → 无效
     
     # ============ east edge ============
     outside = 0
@@ -170,7 +201,7 @@ def _ascent_boundary_by_half_max(
             break
     
     if east_idx is None:
-        east_idx = len(ww) - 1
+        return (np.nan, np.nan, np.nan, wmin)  # 没找到边界 → 无效
     
     west = float(rr[west_idx])
     east = float(rr[east_idx])
@@ -216,12 +247,26 @@ def main():
     if "pressure_level" in w.dims:
         w = w.rename({"pressure_level": "level"})
     
+    # 将经度从 -180~180 转为 0~360，以支持 TRACK_LON_MAX > 180
+    lon_vals = w["lon"].values
+    if lon_vals.min() < 0:
+        new_lon = np.where(lon_vals < 0, lon_vals + 360, lon_vals)
+        w = w.assign_coords(lon=new_lon).sortby("lon")
+    
     # subset lon to tracking window
     w = w.sel(lon=slice(TRACK_LON_MIN, TRACK_LON_MAX))
     
     # layer-mean: low (1000-600 hPa), up (400-200 hPa)
-    w_low = w.sel(level=slice(LOW_LAYER[0], LOW_LAYER[1])).mean("level", skipna=True)
-    w_up  = w.sel(level=slice(UP_LAYER[0],  UP_LAYER[1])).mean("level", skipna=True)
+    w_low_sel = w.sel(level=slice(LOW_LAYER[0], LOW_LAYER[1]))
+    w_up_sel  = w.sel(level=slice(UP_LAYER[0],  UP_LAYER[1]))
+    if PRESSURE_WEIGHTED:
+        print("  Using pressure-thickness weighted layer mean")
+        w_low = _pressure_weighted_mean(w_low_sel, LOW_LAYER)
+        w_up  = _pressure_weighted_mean(w_up_sel,  UP_LAYER)
+    else:
+        print("  Using equal-weight layer mean")
+        w_low = w_low_sel.mean("level", skipna=True)
+        w_up  = w_up_sel.mean("level", skipna=True)
     
     # make sure dims are (time, lon)
     w_low = w_low.transpose("time", "lon")
@@ -336,6 +381,7 @@ def main():
             "source_w": W_NORM_NC,
             "levels": f"low_layer={LOW_LAYER[0]}..{LOW_LAYER[1]}hPa, up_layer={UP_LAYER[0]}..{UP_LAYER[1]}hPa",
             "lon_window": f"{TRACK_LON_MIN}..{TRACK_LON_MAX}",
+            "layer_mean_method": "pressure_weighted" if PRESSURE_WEIGHTED else "equal_weight",
             "boundary_method": "half_max_fwhm",
             "half_max_fraction": str(HALF_MAX_FRACTION),
             "winter_months": ",".join(map(str, sorted(WINTER_MONTHS))),

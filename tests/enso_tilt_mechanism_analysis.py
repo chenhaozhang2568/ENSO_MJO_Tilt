@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-enso_tilt_mechanism_analysis.py: ENSO-Tilt 差异物理机制分析
+enso_tilt_mechanism_analysis.py — ENSO-Tilt 差异物理机制分析
 
-分析内容:
-1. 边界宽度对比（高层/低层）
-2. omega 峰值强度对比
-3. 西边界 vs 东边界分离分析
+功能：
+    从边界宽度、omega 峰值强度和西/东边界位置三方面
+    剖析不同 ENSO 相位下 Tilt 差异的物理来源。
+输入：
+    tilt_daily_step4_layermean_1979-2022.nc, mjo_events_step3_1979-2022.csv,
+    oni.ascii.txt
+输出：
+    figures/mechanism_analysis/enso_tilt_mechanism.png
+用法：
+    python tests/enso_tilt_mechanism_analysis.py
 """
 
 from __future__ import annotations
@@ -26,48 +32,11 @@ mpl.rcParams['axes.unicode_minus'] = False
 # ======================
 TILT_NC = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
-ONI_FILE = r"E:\Datas\ClimateIndex\raw\oni\oni.ascii.txt"
-OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\mechanism_analysis")
+ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
+OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\mechanism")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-ONI_THRESHOLD = 0.5
 
-
-def load_oni():
-    oni = pd.read_csv(ONI_FILE, sep=r'\s+', header=0, engine='python')
-    month_map = {'DJF': 1, 'JFM': 2, 'FMA': 3, 'MAM': 4, 'AMJ': 5, 'MJJ': 6,
-                'JJA': 7, 'JAS': 8, 'ASO': 9, 'SON': 10, 'OND': 11, 'NDJ': 12}
-    records = []
-    for _, row in oni.iterrows():
-        seas = row['SEAS']
-        year = int(row['YR'])
-        anom = row['ANOM']
-        if seas in month_map:
-            month = month_map[seas]
-            records.append({'year': year, 'month': month, 'oni': anom})
-    oni_df = pd.DataFrame(records)
-    oni_df['date'] = pd.to_datetime(oni_df[['year', 'month']].assign(day=1))
-    return oni_df.set_index('date')['oni']
-
-
-def classify_enso(event_center_date, oni_series):
-    year = event_center_date.year
-    month = event_center_date.month
-    target = pd.Timestamp(year=year, month=month, day=1)
-    if target in oni_series.index:
-        oni_val = oni_series.loc[target]
-    else:
-        idx = oni_series.index.get_indexer([target], method='nearest')[0]
-        if idx >= 0 and idx < len(oni_series):
-            oni_val = oni_series.iloc[idx]
-        else:
-            return None
-    if oni_val >= ONI_THRESHOLD:
-        return 'El Nino'
-    elif oni_val <= -ONI_THRESHOLD:
-        return 'La Nina'
-    else:
-        return 'Neutral'
 
 
 def main():
@@ -90,7 +59,8 @@ def main():
     up_wmin = ds["up_wmin"].values    # 高层最强上升
     
     events_df = pd.read_csv(EVENTS_CSV, parse_dates=["start_date", "end_date"])
-    oni_series = load_oni()
+    enso_stats = pd.read_csv(ENSO_STATS_CSV)
+    enso_map = dict(zip(enso_stats['event_id'], enso_stats['enso_phase']))
     print(f"  Events: {len(events_df)}")
     
     # 2. 计算事件级统计
@@ -98,9 +68,13 @@ def main():
     
     event_stats = []
     for _, ev in events_df.iterrows():
+        eid = ev['event_id']
+        phase = enso_map.get(eid)
+        if phase is None:
+            continue
+        
         start = pd.Timestamp(ev['start_date'])
         end = pd.Timestamp(ev['end_date'])
-        center = start + (end - start) / 2
         mask = (time >= start) & (time <= end)
         
         # 提取该事件的数据
@@ -117,17 +91,13 @@ def main():
         if valid_idx.sum() == 0:
             continue
         
-        enso = classify_enso(center, oni_series)
-        if enso is None:
-            continue
-        
         # 计算边界宽度
         low_width = le_ev[valid_idx] - lw_ev[valid_idx]
         up_width = ue_ev[valid_idx] - uw_ev[valid_idx]
         
         event_stats.append({
-            'event_id': ev['event_id'],
-            'enso_phase': enso,
+            'event_id': eid,
+            'enso_phase': phase,
             'mean_tilt': np.nanmean(tilt_ev[valid_idx]),
             # 边界位置
             'mean_low_west': np.nanmean(lw_ev[valid_idx]),

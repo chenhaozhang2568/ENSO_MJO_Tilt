@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-enso_physical_mechanism.py: ENSO 分组的物理机制合成分析
+enso_physical_mechanism.py — ENSO 分组的物理机制合成分析
 
-分析目标：
-    验证为什么 La Niña 最西侧偏大，El Niño 中间偏大
-    
-分析内容：
-    1. 风切变 (u200 - u850)
-    2. 水汽 (低层比湿 q)
-    3. MSE (湿静能)
-    4. 环流型 (低层辐合/高层辐散)
+功能：
+    验证不同 ENSO 相位下 MJO 垂直倾斜的物理机制差异，
+    分析风切变、水汽、MSE 和环流型的 ENSO 分组合成。
+输入：
+    era5_mjo_recon_{t,q,u,v,w}_norm_1979-2022.nc, mjo_mvEOF_step3_1979-2022.nc,
+    mjo_events_step3_1979-2022.csv, oni.ascii.txt
+输出：
+    figures/enso_mechanism/enso_physical_mechanism_composite.png
+用法：
+    python tests/enso_physical_mechanism.py
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ V_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_v_norm_1979-2022.nc"
 W_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_w_norm_1979-2022.nc"
 STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
-ONI_FILE = r"E:\Datas\ClimateIndex\raw\oni\oni.ascii.txt"
+ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
 
 FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\enso_mechanism")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,41 +54,10 @@ LEVEL_TO_HEIGHT = {
 
 ENSO_ORDER = ["El Nino", "La Nina", "Neutral"]
 ENSO_COLORS = {"El Nino": "#E74C3C", "La Nina": "#3498DB", "Neutral": "#95A5A6"}
-ONI_THRESHOLD = 0.5
+AMP_THRESHOLD = 0.5
 
 
-def load_oni():
-    oni = pd.read_csv(ONI_FILE, sep=r'\s+', header=0, engine='python')
-    month_map = {'DJF': 1, 'JFM': 2, 'FMA': 3, 'MAM': 4, 'AMJ': 5, 'MJJ': 6,
-                'JJA': 7, 'JAS': 8, 'ASO': 9, 'SON': 10, 'OND': 11, 'NDJ': 12}
-    records = []
-    for _, row in oni.iterrows():
-        seas = row['SEAS']
-        year = int(row['YR'])
-        anom = row['ANOM']
-        if seas in month_map:
-            month = month_map[seas]
-            records.append({'year': year, 'month': month, 'oni': anom})
-    oni_df = pd.DataFrame(records)
-    oni_df['date'] = pd.to_datetime(oni_df[['year', 'month']].assign(day=1))
-    return oni_df.set_index('date')['oni']
 
-
-def classify_enso(date, oni_series):
-    target = pd.Timestamp(year=date.year, month=date.month, day=1)
-    if target in oni_series.index:
-        oni_val = oni_series.loc[target]
-    else:
-        idx = oni_series.index.get_indexer([target], method='nearest')[0]
-        if idx >= 0 and idx < len(oni_series):
-            oni_val = oni_series.iloc[idx]
-        else:
-            return None
-    if oni_val >= ONI_THRESHOLD:
-        return 'El Nino'
-    elif oni_val <= -ONI_THRESHOLD:
-        return 'La Nina'
-    return 'Neutral'
 
 
 def load_data():
@@ -103,16 +74,15 @@ def load_data():
     # Step3 (中心经度、振幅)
     ds3 = xr.open_dataset(STEP3_NC, engine="netcdf4")
     
-    # 事件
+    # 事件 + ENSO 分类
     events = pd.read_csv(EVENTS_CSV, parse_dates=["start_date", "end_date"])
-    
-    # ONI
-    oni_series = load_oni()
+    enso_stats = pd.read_csv(ENSO_STATS_CSV)
+    enso_map = dict(zip(enso_stats['event_id'], enso_stats['enso_phase']))
     
     # 提取数据
     time = pd.to_datetime(ds_t["time"].values)
     lon = ds_t["lon"].values
-    levels = ds_t["pressure_level"].values
+    levels = ds_t["pressure_level"].values if "pressure_level" in ds_t.dims else ds_t["level"].values
     
     T = ds_t["t_mjo_recon_norm"].values  # (time, level, lon)
     q = ds_q["q_mjo_recon_norm"].values
@@ -130,7 +100,7 @@ def load_data():
         'time': time, 'lon': lon, 'levels': levels,
         'T': T, 'q': q, 'u': u, 'v': v, 'w': w,
         'center_lon': center_lon, 'amplitude': amplitude,
-        'events': events, 'oni_series': oni_series
+        'events': events, 'enso_map': enso_map
     }
 
 
@@ -145,15 +115,15 @@ def create_enso_composites(data, variable, lon_half_width=60):
     Returns:
         dict: {enso_phase: composite array (level, rel_lon)}
     """
+    events = data['events']
+    enso_map = data['enso_map']
     time = data['time']
     lon = data['lon']
     levels = data['levels']
     center_lon = data['center_lon']
     amplitude = data['amplitude']
-    events = data['events']
-    oni_series = data['oni_series']
-    
     dlon = lon[1] - lon[0]
+    
     n_rel_lon = int(2 * lon_half_width / dlon) + 1
     rel_lons = np.linspace(-lon_half_width, lon_half_width, n_rel_lon)
     
@@ -161,22 +131,22 @@ def create_enso_composites(data, variable, lon_half_width=60):
     enso_days = {phase: [] for phase in ENSO_ORDER}
     
     for _, ev in events.iterrows():
-        start = pd.Timestamp(ev['start_date'])
-        end = pd.Timestamp(ev['end_date'])
-        center = start + (end - start) / 2
-        enso = classify_enso(center, oni_series)
-        if enso is None:
+        eid = ev['event_id']
+        phase = enso_map.get(eid)
+        if phase is None or phase not in ENSO_ORDER:
             continue
         
+        start = pd.Timestamp(ev['start_date'])
+        end = pd.Timestamp(ev['end_date'])
         mask = (time >= start) & (time <= end)
         day_indices = np.where(mask)[0]
         
         for idx in day_indices:
             c = center_lon[idx]
             amp = amplitude[idx]
-            if not np.isfinite(c) or not np.isfinite(amp) or amp < 0.5:
+            if not np.isfinite(c) or not np.isfinite(amp) or amp < AMP_THRESHOLD:
                 continue
-            enso_days[enso].append((idx, c, amp))
+            enso_days[phase].append((idx, c, amp))
     
     # 准备变量数据
     if variable == 'shear':
@@ -233,9 +203,9 @@ def create_enso_composites(data, variable, lon_half_width=60):
                 k = np.argmin(np.abs(rel - rl))
                 if np.abs(rel[k] - rl) < dlon:
                     if is_2d:
-                        stack[i, j] = var_data[idx, k] / amp
+                        stack[i, j] = var_data[idx, k]
                     else:
-                        stack[i, :, j] = var_data[idx, :, k] / amp
+                        stack[i, :, j] = var_data[idx, :, k]
         
         composites[phase] = np.nanmean(stack, axis=0)
     

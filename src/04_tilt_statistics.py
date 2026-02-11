@@ -33,7 +33,7 @@ from pathlib import Path
 TILT_NC = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 OUT_CSV = r"E:\Datas\Derived\tilt_event_stats_1979-2022.csv"
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\tilt_stats")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FIG = FIG_DIR / "tilt_event_distribution.png"
 

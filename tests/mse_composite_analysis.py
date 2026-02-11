@@ -1,35 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-mse_composite_analysis.py: 假设4 - MSE 充放电机制分析
+mse_composite_analysis.py — MSE 充放电机制分析
 
-================================================================================
-功能描述：
-    本脚本分析湿静力能（MSE）在 MJO 传播中的作用，检验 ENSO 不同相位下 MSE 领先距离的差异。
-    
-科学问题：
-    - ENSO 如何影响 MJO 前方的 MSE 充能过程？
-    - MSE 异常峰值相对于对流中心的领先距离是否因 ENSO 相位而异？
-    
-物理机制：
-    MJO 传播依赖"充放电"机制：低层 MSE 在对流前方累积（充能），为东传提供热力学条件。
-    MSE 定义：MSE = Cp×T + g×z + Lv×q（感热 + 位势能 + 潜热）
-    
-主要分析内容：
-    1. 相对经度坐标下的 MSE 垂直-纬向剖面合成图
-    2. 三组 ENSO 相位的 MSE 前沿位置对比
-    3. 低层 MSE 峰值领先距离统计
-    4. MSE 结构与 MJO 倾斜的关联分析
-
-Calculate composites of MSE anomaly in Height-Longitude space, 
-centered on MJO convective center (Lag=0).
-
-Inputs:
-- Reconstructed T: E:\Datas\Derived\era5_mjo_recon_t_1979-2022.nc
-- Reconstructed q: E:\Datas\Derived\era5_mjo_recon_q_1979-2022.nc
-- MJO events and center longitude
-
-Run:
-  python E:\\Projects\\ENSO_MJO_Tilt\\tests\\mse_composite_analysis.py
+功能：
+    分析湿静力能（MSE）在 MJO 传播中的作用，检验 ENSO 不同相位下
+    MSE 领先距离的差异，包括经度-高度剖面合成图、差异图和领先距离统计。
+输入：
+    era5_mjo_recon_{t,q}_norm_1979-2022.nc, mjo_mvEOF_step3_1979-2022.nc,
+    mjo_events_step3_1979-2022.csv, tilt_event_stats_with_enso_1979-2022.csv
+输出：
+    figures/mse_effect/ 下的 MSE 合成、差异、摘要图
+用法：
+    python tests/mse_composite_analysis.py
 """
 
 from __future__ import annotations
@@ -50,7 +32,7 @@ STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
 
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\mse_effect")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\mse")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ========================
@@ -76,6 +58,7 @@ Z_APPROX = {
 
 ENSO_ORDER = ["El Nino", "Neutral", "La Nina"]
 ENSO_COLORS = {"El Nino": "#E74C3C", "Neutral": "#95A5A6", "La Nina": "#3498DB"}
+AMP_THRESHOLD = 0.5
 
 
 def load_data():
@@ -91,7 +74,7 @@ def load_data():
     
     # Get dimensions
     time = pd.to_datetime(t_recon.time.values)
-    levels = t_recon.pressure_level.values
+    levels = t_recon.pressure_level.values if "pressure_level" in t_recon.dims else t_recon.level.values
     lon = t_recon.lon.values
     
     # Calculate MSE anomaly at each level
@@ -106,8 +89,8 @@ def load_data():
     
     mse_da = xr.DataArray(
         mse,
-        coords={"time": t_recon.time, "pressure_level": t_recon.pressure_level, "lon": t_recon.lon},
-        dims=("time", "pressure_level", "lon"),
+        coords={"time": t_recon.time, "level": levels, "lon": t_recon.lon},
+        dims=("time", "level", "lon"),
         name="mse_mjo_recon"
     )
     
@@ -139,13 +122,11 @@ def load_data():
     return mse_da, df_events, lon, levels
 
 
-def create_composite(mse_da, df_events, lon, levels, lon_range=(-90, 180), normalize_by_amp=True):
+def create_composite(mse_da, df_events, lon, levels, lon_range=(-90, 180)):
     """
     Create MSE composite in relative longitude space.
     Center each day's MSE field on MJO convective center.
-    
-    Args:
-        normalize_by_amp: If True, divide MSE by MJO amplitude (Hu & Li 2021 method)
+    数据来源为 _norm_（已做振幅归一化），无需再归一化。
     """
     print("\nCreating composites...")
     
@@ -176,12 +157,10 @@ def create_composite(mse_da, df_events, lon, levels, lon_range=(-90, 180), norma
             day_idx = list(mse_da.time.values).index(pd.Timestamp(row['time']))
             mse_day = mse_da.isel(time=day_idx).values  # (level, lon)
             
-            # Normalize by MJO amplitude (Hu & Li 2021 method)
+            # 振幅筛选
             amp_today = row['mjo_amp']
-            if normalize_by_amp and np.isfinite(amp_today) and amp_today > 0.5:
-                mse_day = mse_day / amp_today
-            elif normalize_by_amp and (not np.isfinite(amp_today) or amp_today <= 0.5):
-                continue  # Skip days with too weak amplitude
+            if not np.isfinite(amp_today) or amp_today < AMP_THRESHOLD:
+                continue
             
             # Calculate relative longitude
             clon_360 = np.mod(clon, 360)

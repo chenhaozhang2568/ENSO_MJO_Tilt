@@ -1,25 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-mjo_3d_structure_visualization.py: MJO 三维结构可视化
+mjo_3d_structure_visualization.py — MJO 三维结构可视化
 
-================================================================================
-功能描述：
-    本脚本生成 MJO 三维结构的多视角可视化图：
-    1. 经度-高度剖面图（4 张）：u, q, omega, T
-    2. 三维立体图（4 张）：u, q, omega, T
-
-方法：
-    - 以 MJO 对流中心为原点，提取相对经度范围 [-60°, +60°] 的数据
-    - 按 MJO 振幅归一化（Hu & Li 2021 方法）
-    - 对所有 MJO 事件的所有天数取平均，得到合成场
-
-数据源：
-    - 归一化重构场: era5_mjo_recon_{var}_norm_1979-2022.nc
-    - MJO 事件列表: mjo_events_step3_1979-2022.csv
-    - MJO 中心追踪: mjo_mvEOF_step3_1979-2022.nc
-
-Run:
-    python E:\\Projects\\ENSO_MJO_Tilt\\tests\\mjo_3d_structure_visualization.py
+功能：
+    生成 MJO 三维结构的多视角合成图，包括经度-高度剖面图和经度-纬度-高度立体图。
+    以 MJO 对流中心为原点，提取相对经度范围的数据，
+    并按 MJO 振幅归一化（Hu & Li 2021）。
+输入：
+    era5_mjo_recon_{u,q,w,t}_norm[_3d]_1979-2022.nc,
+    mjo_mvEOF_step3_1979-2022.nc, mjo_events_step3_1979-2022.csv
+输出：
+    figures/mjo_3d_structure/ 下的 8 张可视化图
+用法：
+    python tests/mjo_3d_structure_visualization.py
 """
 
 from __future__ import annotations
@@ -38,13 +31,12 @@ warnings.filterwarnings("ignore")
 # ========================
 # PATHS
 # ========================
-DERIVED_DIR = Path(r"E:\Datas\Derived")
-U_RECON_NC = DERIVED_DIR / "era5_mjo_recon_u_norm_1979-2022.nc"
-Q_RECON_NC = DERIVED_DIR / "era5_mjo_recon_q_norm_1979-2022.nc"
-W_RECON_NC = DERIVED_DIR / "era5_mjo_recon_w_norm_1979-2022.nc"
-T_RECON_NC = DERIVED_DIR / "era5_mjo_recon_t_norm_1979-2022.nc"
-STEP3_NC = DERIVED_DIR / "mjo_mvEOF_step3_1979-2022.nc"
-EVENTS_CSV = DERIVED_DIR / "mjo_events_step3_1979-2022.csv"
+U_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_u_norm_1979-2022.nc"
+Q_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_q_norm_1979-2022.nc"
+W_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_w_norm_1979-2022.nc"
+T_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_t_norm_1979-2022.nc"
+STEP3_NC   = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
+EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 
 FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\mjo_3d_structure")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -107,7 +99,7 @@ def load_mjo_data():
 def load_variable_data(var_key):
     """Load reconstructed and normalized variable data."""
     config = VAR_CONFIG[var_key]
-    print(f"Loading {var_key} data from {config['file'].name}...")
+    print(f"Loading {var_key} data from {Path(config['file']).name}...")
     ds = xr.open_dataset(config['file'])
     data = ds[config['var_name']]
     
@@ -155,7 +147,7 @@ def create_composite(var_key, center_lon, mjo_amp, time_mjo, events):
             
             # Check amplitude threshold
             amp_today = mjo_amp[idx]
-            if not np.isfinite(amp_today) or amp_today <= AMP_THRESHOLD:
+            if not np.isfinite(amp_today) or amp_today < AMP_THRESHOLD:
                 continue
             
             t = time_mjo[idx]
@@ -171,8 +163,7 @@ def create_composite(var_key, center_lon, mjo_amp, time_mjo, events):
             if np.all(np.isnan(daily_data)):
                 continue
             
-            # Normalize by MJO amplitude (Hu & Li 2021 method)
-            daily_data = daily_data / amp_today
+            # 数据已是 _norm_（振幅归一化），无需再除以 amp
             
             # Sample at relative longitudes
             sample = np.zeros((len(levels), len(rel_lons)))
@@ -429,28 +420,28 @@ def plot_3d_structure(var_key, mean_comp, rel_lons, levels):
 # ========================================
 VAR_CONFIG_3D = {
     'u': {
-        'file': DERIVED_DIR / "era5_mjo_recon_u_norm_3d_1979-2022.nc",
+        'file': r"E:\Datas\Derived\era5_mjo_recon_u_norm_3d_1979-2022.nc",
         'var_name': 'u_mjo_recon_norm_3d',
         'label': 'Zonal Wind (u)',
         'unit': 'm/s per unit amp',
         'cmap': 'RdBu_r',
     },
     'q': {
-        'file': DERIVED_DIR / "era5_mjo_recon_q_norm_3d_1979-2022.nc",
+        'file': r"E:\Datas\Derived\era5_mjo_recon_q_norm_3d_1979-2022.nc",
         'var_name': 'q_mjo_recon_norm_3d',
         'label': 'Specific Humidity (q)',
         'unit': 'g/kg per unit amp',
         'cmap': 'BrBG',
     },
     'omega': {
-        'file': DERIVED_DIR / "era5_mjo_recon_w_norm_3d_1979-2022.nc",
+        'file': r"E:\Datas\Derived\era5_mjo_recon_w_norm_3d_1979-2022.nc",
         'var_name': 'w_mjo_recon_norm_3d',
         'label': 'Vertical Velocity (ω)',
         'unit': 'Pa/s per unit amp',
         'cmap': 'RdBu_r',
     },
     'T': {
-        'file': DERIVED_DIR / "era5_mjo_recon_t_norm_3d_1979-2022.nc",
+        'file': r"E:\Datas\Derived\era5_mjo_recon_t_norm_3d_1979-2022.nc",
         'var_name': 't_mjo_recon_norm_3d',
         'label': 'Temperature (T)',
         'unit': 'K per unit amp',
@@ -471,7 +462,7 @@ def create_composite_3d(var_key, center_lon, mjo_amp, time_mjo, events):
     config = VAR_CONFIG_3D[var_key]
     
     # Check if 3D file exists
-    if not config['file'].exists():
+    if not Path(config['file']).exists():
         print(f"  [WARNING] 3D file not found: {config['file']}")
         return None, None, None, None, 0
     
@@ -507,7 +498,7 @@ def create_composite_3d(var_key, center_lon, mjo_amp, time_mjo, events):
                 continue
             
             amp_today = mjo_amp[idx]
-            if not np.isfinite(amp_today) or amp_today <= AMP_THRESHOLD:
+            if not np.isfinite(amp_today) or amp_today < AMP_THRESHOLD:
                 continue
             
             t = time_mjo[idx]

@@ -1,34 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-phase_speed_tilt_analysis.py: MJO 相速度与倾斜相关性分析
+phase_speed_tilt_analysis.py — MJO 相速度与倾斜相关性分析
 
-================================================================================
-功能描述：
-    本脚本按照 Hu & Li (2021) 方法计算 MJO 事件的相速度（phase speed），
-    并分析其与垂直倾斜指标（tilt）的相关性。
-
-计算方法：
-    1. 对每个 MJO 事件，在 60°E-180°E 区间内提取逐日对流中心经度
-    2. 将中心经度对时间做线性最小二乘拟合
-    3. 拟合斜率即为相速度（度/天 或 m/s）
-
-主要分析内容：
-    1. 逐事件相速度与平均倾斜的散点图
-    2. 相关系数与统计显著性检验
-    3. 相速度分布的 ENSO 分组比较
-    4. 快传播 vs 慢传播事件的倾斜差异
-
-物理意义：
-    相速度反映 MJO 东传效率，倾斜结构影响能量和动量的垂直传输，
-    二者的关联揭示 MJO 动力学机制。
-- 对每个MJO事件，提取逐日对流中心经度 λc(t)
-- 用最小二乘直线拟合，斜率 dλc/dt 为事件平均东传速度 (deg/day)
-- 换算成 m/s: c = slope * 111320 / 86400
-- 与事件平均倾斜做相关/回归分析
-
-运行:
-cd /d E:\Projects\ENSO_MJO_Tilt
-python tests\phase_speed_tilt_analysis.py
+功能：
+    按 Hu & Li (2021) 方法，对每个 MJO 事件在 60°E–180°E 区间内
+    线性拟合逐日对流中心经度以计算相速度，并分析其与 Tilt 的相关性。
+输入：
+    mjo_mvEOF_step3_1979-2022.nc, mjo_events_step3_1979-2022.csv,
+    tilt_event_stats_1979-2022.csv
+输出：
+    phase_speed_tilt_summary.csv, figures/phase_speed_vs_tilt.png
+用法：
+    python tests/phase_speed_tilt_analysis.py
 """
 
 from __future__ import annotations
@@ -47,12 +30,9 @@ STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 TILT_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_1979-2022.csv"
 
-OUT_DIR = Path(r"E:\Datas\Derived")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_CSV = OUT_DIR / "phase_speed_tilt_summary.csv"
-
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\phase_speed")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
+OUT_CSV = FIG_DIR / "phase_speed_tilt_summary.csv"
 OUT_FIG = FIG_DIR / "phase_speed_vs_tilt.png"
 
 # ======================

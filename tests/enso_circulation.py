@@ -1,8 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-enso_circulation.py: ENSO 分类垂直环流合成图
+enso_circulation.py — ENSO 分组垂直环流合成图
 
-按 El Nino / La Nina / Neutral 分为三张图
+功能：
+    按 El Niño / La Niña / Neutral 分组，以 MJO 对流中心为原点，
+    合成各组的垂直环流结构（经度-高度剖面 + 矢量图）。
+输入：
+    era5_mjo_recon_{u,w}_norm_1979-2022.nc, mjo_mvEOF_step3_1979-2022.nc,
+    mjo_events_step3_1979-2022.csv, oni.ascii.txt
+输出：
+    figures/circulation/ 下的 ENSO 分组环流合成图
+用法：
+    python tests/enso_circulation.py
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ U_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_u_norm_1979-2022.nc"
 W_RECON_NC = r"E:\Datas\Derived\era5_mjo_recon_w_norm_1979-2022.nc"
 STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
-ONI_FILE = r"E:\Datas\ClimateIndex\raw\oni\oni.ascii.txt"
+ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
 
 FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\circulation")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -40,42 +49,10 @@ LEVEL_TO_HEIGHT = {
 }
 
 WINTER_MONTHS = {11, 12, 1, 2, 3, 4}
-ONI_THRESHOLD = 0.5
+AMP_THRESHOLD = 0.5
 
 
-def load_oni():
-    """加载 ONI 指数"""
-    oni = pd.read_csv(ONI_FILE, sep=r'\s+', header=0, engine='python')
-    month_map = {'DJF': 1, 'JFM': 2, 'FMA': 3, 'MAM': 4, 'AMJ': 5, 'MJJ': 6,
-                'JJA': 7, 'JAS': 8, 'ASO': 9, 'SON': 10, 'OND': 11, 'NDJ': 12}
-    records = []
-    for _, row in oni.iterrows():
-        seas = row['SEAS']
-        year = int(row['YR'])
-        anom = row['ANOM']
-        if seas in month_map:
-            records.append({'year': year, 'month': month_map[seas], 'oni': anom})
-    oni_df = pd.DataFrame(records)
-    oni_df['date'] = pd.to_datetime(oni_df[['year', 'month']].assign(day=1))
-    return oni_df.set_index('date')['oni']
 
-
-def classify_enso(date, oni_series):
-    """分类 ENSO 相"""
-    target = pd.Timestamp(year=date.year, month=date.month, day=1)
-    if target in oni_series.index:
-        oni_val = oni_series.loc[target]
-    else:
-        idx = oni_series.index.get_indexer([target], method='nearest')[0]
-        if idx >= 0 and idx < len(oni_series):
-            oni_val = oni_series.iloc[idx]
-        else:
-            return None
-    if oni_val >= ONI_THRESHOLD:
-        return 'El Nino'
-    elif oni_val <= -ONI_THRESHOLD:
-        return 'La Nina'
-    return 'Neutral'
 
 
 def load_data():
@@ -86,13 +63,13 @@ def load_data():
     ds_w = xr.open_dataset(W_RECON_NC, engine="netcdf4")
     ds3 = xr.open_dataset(STEP3_NC, engine="netcdf4")
     events = pd.read_csv(EVENTS_CSV, parse_dates=["start_date", "end_date"])
-    oni_series = load_oni()
+    enso_stats = pd.read_csv(ENSO_STATS_CSV)
     
     u = ds_u["u_mjo_recon_norm"].values
     w = ds_w["w_mjo_recon_norm"].values
     
     time = pd.to_datetime(ds_u["time"].values)
-    levels = ds_u["pressure_level"].values
+    levels = ds_u["pressure_level"].values if "pressure_level" in ds_u.dims else ds_u["level"].values
     lon = ds_u["lon"].values
     
     center_lon = ds3["center_lon_track"].values
@@ -103,27 +80,27 @@ def load_data():
     
     return {
         'u': u, 'w': w, 'time': time, 'levels': levels, 'lon': lon,
-        'center_lon': center_lon, 'amp': amp, 'events': events, 'oni': oni_series
+        'center_lon': center_lon, 'amp': amp, 'events': events,
+        'enso_stats': enso_stats
     }
 
 
 def classify_events_by_enso(data):
-    """按 ENSO 相分类事件"""
+    """按 ENSO 相分类事件（复用管线预分类 CSV）"""
     events = data['events']
-    oni_series = data['oni']
+    enso_stats = data['enso_stats']
+    enso_map = dict(zip(enso_stats['event_id'], enso_stats['enso_phase']))
     
     enso_events = {'El Nino': [], 'La Nina': [], 'Neutral': []}
     
     for _, ev in events.iterrows():
-        start = pd.Timestamp(ev['start_date'])
-        end = pd.Timestamp(ev['end_date'])
-        center_date = start + (end - start) / 2
-        
-        enso = classify_enso(center_date, oni_series)
-        if enso:
-            enso_events[enso].append({
-                'event_id': ev['event_id'],
-                'start': start, 'end': end
+        eid = ev['event_id']
+        phase = enso_map.get(eid)
+        if phase and phase in enso_events:
+            enso_events[phase].append({
+                'event_id': eid,
+                'start': pd.Timestamp(ev['start_date']),
+                'end': pd.Timestamp(ev['end_date'])
             })
     
     print(f"\n[2] ENSO classification:")
@@ -162,7 +139,7 @@ def create_composite(data, event_list, lon_range=(-90, 180)):
                 continue
             c = center_lon[idx]
             a = amp[idx]
-            if not np.isfinite(c) or not np.isfinite(a) or a < 0.5:
+            if not np.isfinite(c) or not np.isfinite(a) or a < AMP_THRESHOLD:
                 continue
             
             rel = (lon - c + 180) % 360 - 180

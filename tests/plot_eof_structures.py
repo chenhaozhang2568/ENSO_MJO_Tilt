@@ -1,20 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-plot_eof_structures.py: MJO EOF 模态空间结构可视化
+plot_eof_structures.py — MJO EOF 模态空间结构可视化
 
-================================================================================
-功能描述：
-    本脚本读取 MV-EOF 的 PC 时间序列，通过回归方法反演 MJO 前两个模态的 2D 空间结构，
-    并绘制发表级别的图形。
-
-主要输出：
-    1. Mode 1 和 Mode 2 的空间回归图
-    2. OLR 异常填色（对流信号）
-    3. 850hPa 风场矢量（低层环流）
-    4. 200hPa 纬向风等值线（高层辐散/辐合）
-
-科学意义：
-    展示 MJO 的经典两模态结构（相位相差约 90°），Mode 1 和 Mode 2 组合反映 MJO 东传。
+功能：
+    读取 MV-EOF 的 PC 时间序列，通过回归方法反演 MJO 前两个模态的
+    2D 空间结构（OLR 异常 + 850hPa 风矢量 + 200hPa 纬向风等值线）。
+输入：
+    mjo_mvEOF_step3_1979-2022.nc, OLR/U850/U200 的日均原始数据
+输出：
+    figures/eof_spatial_structure.png
+用法：
+    python tests/plot_eof_structures.py
+"""
 
 import numpy as np
 import xarray as xr
@@ -32,7 +29,7 @@ from pathlib import Path
 OLR_BP_PATH  = r"E:\Datas\ClimateIndex\processed\olr_bp_1979-2022.nc"
 U_BP_PATH    = r"E:\Datas\ERA5\processed\pressure_level\era5_u850_u200_bp_1979-2022.nc"
 MJO_RES_PATH = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
-OUT_FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\eof_structures")
+OUT_FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\eof")
 OUT_FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # 绘图时间范围 (仅用于回归计算，建议覆盖全时段)

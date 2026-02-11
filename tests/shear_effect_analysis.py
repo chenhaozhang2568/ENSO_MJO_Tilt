@@ -1,32 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-shear_effect_analysis.py: 假设3 - 背景垂直风切变效应验证
+shear_effect_analysis.py — 背景垂直风切变效应分析
 
-================================================================================
-功能描述：
-    本脚本验证背景垂直风切变对 MJO 结构的影响，分析 ENSO 不同相位下的风切变差异。
-    
-科学问题：
-    - 不同 ENSO 相位期间，背景纬向风垂直切变 |U200 - U850| 是否有显著差异？
-    - 风切变是否影响 MJO 的垂直倾斜结构？
-    
-物理机制：
-    垂直风切变可以倾斜对流系统结构，影响 MJO 的传播和组织。El Niño 期间热带太平洋
-    的环流变化可能改变背景风切变模式。
-    
-主要分析内容：
-    1. 逐日垂直风切变的 ENSO 分组统计
-    2. 风切变与倾斜指数的相关性分析
-    3. 事件平均风切变对比
-    4. 可视化风切变的空间分布
-Mechanism: Strong shear maintains wave tilted structure through vorticity advection.
-
-Inputs:
-- Reconstructed U: E:\Datas\Derived\era5_mjo_recon_u_1979-2022.nc
-- MJO events and ENSO classification
-
-Run:
-  python E:\\Projects\\ENSO_MJO_Tilt\\tests\\shear_effect_analysis.py
+功能：
+    分析背景纬向风垂直切变 |U200−U850| 对 MJO 结构的影响，
+    检验不同 ENSO 相位下的风切变差异及其与 Tilt 的相关性。
+输入：
+    era5_mjo_recon_u_norm_1979-2022.nc, mjo_mvEOF_step3_1979-2022.nc,
+    mjo_events_step3_1979-2022.csv, tilt_event_stats_with_enso_1979-2022.csv
+输出：
+    figures/shear_effect/shear_effect_analysis.png, event_shear_by_enso.csv
+用法：
+    python tests/shear_effect_analysis.py
 """
 
 from __future__ import annotations
@@ -46,7 +31,7 @@ STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
 
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\shear_effect")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\shear")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ========================
@@ -62,7 +47,9 @@ def load_data():
     
     # Load reconstructed U
     ds_u = xr.open_dataset(U_RECON_NC)
-    u_recon = ds_u['u_mjo_recon_norm']  # already normalized by MJO amp
+    u_recon = ds_u['u_mjo_recon_norm']
+    if "pressure_level" in u_recon.dims:
+        u_recon = u_recon.rename({"pressure_level": "level"})
     
     # Load MJO center track
     ds3 = xr.open_dataset(STEP3_NC)
@@ -75,8 +62,8 @@ def load_data():
     enso_map = dict(zip(enso_stats['event_id'], enso_stats['enso_phase']))
     
     # Calculate shear: U200 - U850
-    u200 = u_recon.sel(pressure_level=200).values
-    u850 = u_recon.sel(pressure_level=850).values
+    u200 = u_recon.sel(level=200).values
+    u850 = u_recon.sel(level=850).values
     shear = u200 - u850
     
     # Build dataframe

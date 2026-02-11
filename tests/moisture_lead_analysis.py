@@ -1,35 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-moisture_lead_analysis.py: 假设5 - 边界层水汽领先性分析
+moisture_lead_analysis.py — 边界层水汽领先性分析
 
-================================================================================
-功能描述：
-    本脚本分析边界层水汽（q_925hPa）对 MJO 对流的领先作用，检验 ENSO 活跃年份
-    水汽-对流相位关系是否发生变化。
-    
-科学问题：
-    - 边界层水汽是否提前于 OLR（对流）变化？
-    - ENSO 活跃年份（El Niño/La Niña）水汽领先时间是否有差异？
-    
-物理机制：
-    边界层水汽是 MJO 东传的"燃料"，其累积为深对流发展提供热力条件。水汽领先对流
-    的时间长度反映了 MJO 预充能过程的效率。
-    
-主要分析内容：
-    1. q_925hPa 与 OLR 的超前-滞后相关分析
-    2. 三组 ENSO 相位的水汽领先时间对比
-    3. 相关系数曲线可视化
-    4. 峰值领先天数的统计检验
-
-Calculate lead-lag correlation between q_925hPa and OLR.
-
-Inputs:
-- Reconstructed q: era5_mjo_recon_q_1979-2022.nc
-- Reconstructed OLR: mjo_mvEOF_step3_1979-2022.nc (olr_recon)
-- MJO events and ENSO classification
-
-Run:
-  python E:\\Projects\\ENSO_MJO_Tilt\\tests\\moisture_lead_analysis.py
+功能：
+    分析边界层水汽 q_925hPa 对 MJO 对流的领先作用，
+    检验不同 ENSO 相位下水汽-对流相位关系的差异。
+输入：
+    era5_mjo_recon_q_norm_1979-2022.nc, mjo_mvEOF_step3_1979-2022.nc,
+    mjo_events_step3_1979-2022.csv, tilt_event_stats_with_enso_1979-2022.csv
+输出：
+    figures/moisture_lead/moisture_lead_lag_correlation.png
+用法：
+    python tests/moisture_lead_analysis.py
 """
 
 from __future__ import annotations
@@ -48,7 +30,7 @@ STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
 
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\moisture_lead")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\moisture")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ========================
@@ -65,8 +47,10 @@ def load_data():
     
     # Load q at 925 hPa
     ds_q = xr.open_dataset(Q_RECON_NC)
-    q_recon = ds_q['q_mjo_recon_norm']  # (time, level, lon) - already normalized by MJO amp
-    q_925 = q_recon.sel(pressure_level=925)  # (time, lon)
+    q_recon = ds_q['q_mjo_recon_norm']
+    if "pressure_level" in q_recon.dims:
+        q_recon = q_recon.rename({"pressure_level": "level"})
+    q_925 = q_recon.sel(level=925)  # (time, lon)
     
     # Load OLR recon
     ds3 = xr.open_dataset(STEP3_NC)

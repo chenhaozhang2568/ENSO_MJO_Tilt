@@ -1,23 +1,18 @@
 
 # -*- coding: utf-8 -*-
 """
-plot_olr_hovmoller.py: OLR Hovmöller 时-经度图绘制脚本
+plot_olr_hovmoller.py — OLR Hovmöller 时-经度图
 
-================================================================================
-功能描述：
-    本脚本生成逐年的 OLR 异常场 Hovmöller 图（时间-经度图），用于可视化 MJO 的东传过程。
-
-时间范围：
-    每年冬季（11月-次年4月），覆盖 1979-2022 年
-
-主要特征：
-    1. OLR 异常填色图（蓝色=对流增强，红色=对流抑制）
-    2. -10 W/m² 等值线（标记活跃对流区边界）
-    3. MJO 事件传播趋势线（基于对流中心轨迹线性拟合）
-    4. 每年输出一张独立图片
-
-输出目录：
-    outputs/figures/hovmoller/
+功能：
+    逐冬季（NDJFMA）生成 OLR 异常 Hovmöller 图，
+    叠加 MJO 事件对流中心传播趋势线以可视化东传过程。
+输入：
+    mjo_mvEOF_step3_1979-2022.nc, mjo_events_step3_1979-2022.csv,
+    era5_olr_anom_latmean_1979-2022.nc
+输出：
+    figures/hovmoller/ 下的逐年 Hovmöller 图
+用法：
+    python tests/plot_olr_hovmoller.py
 """
 
 import sys
@@ -37,7 +32,7 @@ sys.path.append(str(project_root))
 STEP3_NC = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
 EVENTS_CSV = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
 FAILED_EVENTS_CSV = r"E:\Datas\Derived\mjo_failed_events_step3_1979-2022.csv"
-OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\hovmoller_yearly_olr_recon_1979-2022")
+OUT_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\hovmoller")
 
 # Settings
 START_YEAR = 1979
@@ -169,7 +164,7 @@ def plot_event_trend_lines(ax, df_events, track_full, win_start, win_end,
         t_fit = t_vals[valid]
         l_fit = l_vals[valid]
 
-        # -------- NEW: only keep points within [60,180] for fitting --------
+        # -------- only keep points within [60,180] for fitting --------
         in_range = (l_fit >= lon_min) & (l_fit <= lon_max)
         if np.sum(in_range) < 2:
             continue
@@ -185,12 +180,12 @@ def plot_event_trend_lines(ax, df_events, track_full, win_start, win_end,
         coeffs = np.polyfit(t_fit, l_unwrapped, 1)
         poly = np.poly1d(coeffs)
 
-        # -------- NEW: evaluate on a dense time grid so line is smooth --------
+        # -------- evaluate on a dense time grid so line is smooth --------
         t_pred = np.linspace(t_fit.min(), t_fit.max(), 80)
         y_pred_unwrapped = poly(t_pred)
         y_pred_wrapped = y_pred_unwrapped % 360
 
-        # -------- NEW: clip to [60,180] for plotting --------
+        # -------- clip to [60,180] for plotting --------
         mask_plot = (y_pred_wrapped >= lon_min) & (y_pred_wrapped <= lon_max)
 
         plot_t = t_pred.copy()                 # NO NaN in time

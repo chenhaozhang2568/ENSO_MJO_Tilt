@@ -1,29 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-tilt_group_phase_speed.py: MJO 倾斜分组相速度对比分析
+tilt_group_phase_speed.py — Tilt 分组相速度对比
 
-================================================================================
-功能描述：
-    本脚本按照垂直倾斜强度将 MJO 事件分为两组，对比分析其相速度差异。
-
-分组定义：
-    - STG（强倾斜组）: tilt > mean + 0.7×std
-    - WTG（弱倾斜组）: tilt < mean - 0.7×std
-
-主要分析内容：
-    1. 两组相速度的 t-检验统计显著性
-    2. 箱线图可视化分组差异
-    3. 相速度分布直方图
-    4. 输出分组统计结果
-
-科学问题：
-    倾斜更强的 MJO 事件是否传播更快或更慢？
-    倾斜结构如何影响 MJO 的动力学行为？
-- WTG (弱倾斜组): tilt < mean - 0.7 * std
-
-运行:
-cd /d E:\Projects\ENSO_MJO_Tilt
-python tests\tilt_group_phase_speed.py
+功能：
+    按 Tilt 强度将 MJO 事件分为 STG（>mean+0.7σ）和
+    WTG（<mean−0.7σ）两组，对比其相速度差异。
+输入：
+    phase_speed_tilt_summary.csv
+输出：
+    tilt_group_comparison.csv, figures/tilt_group_phase_speed_comparison.png
+用法：
+    python tests/tilt_group_phase_speed.py
 """
 
 from __future__ import annotations
@@ -39,11 +26,9 @@ from scipy import stats
 # ======================
 SUMMARY_CSV = r"E:\Datas\Derived\phase_speed_tilt_summary.csv"
 
-OUT_DIR = Path(r"E:\Datas\Derived")
-OUT_CSV = OUT_DIR / "tilt_group_comparison.csv"
-
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures")
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\phase_speed")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
+OUT_CSV = FIG_DIR / "tilt_group_comparison.csv"
 OUT_FIG = FIG_DIR / "tilt_group_phase_speed_comparison.png"
 
 # ======================
@@ -230,7 +215,7 @@ def main():
     print(f"  Saved summary: {OUT_CSV}")
     
     # 保存分组后的完整数据
-    out_full = OUT_DIR / "phase_speed_tilt_with_groups.csv"
+    out_full = FIG_DIR / "phase_speed_tilt_with_groups.csv"
     df_valid.to_csv(out_full, index=False, encoding="utf-8-sig")
     print(f"  Saved full data: {out_full}")
     

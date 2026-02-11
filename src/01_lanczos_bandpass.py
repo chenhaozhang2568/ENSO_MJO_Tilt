@@ -247,11 +247,14 @@ def step2_filter_olr() -> Path:
     olr_bp = apply_fir_convolution_along_time(ds[var], w_bp, "time").rename("olr_bp")
 
     # 修改输出 Dataset，把 olr_anom 也加进去
-    out = xr.Dataset({"olr_bp": olr_bp, "olr_anom": olr_anom}) # <--- 修改这里
+    out = xr.Dataset({"olr_bp": olr_bp, "olr_anom": olr_anom})
+    # FIX: apply_ufunc 可能丢失 lat/lon 坐标，显式从原始 ds 恢复
+    if "lat" not in out.coords and "lat" in ds.coords:
+        out = out.assign_coords(lat=ds["lat"])
+    if "lon" not in out.coords and "lon" in ds.coords:
+        out = out.assign_coords(lon=ds["lon"])
     out["olr_bp"].attrs.update(ds[var].attrs)
     out["olr_bp"].attrs["filter"] = f"Lanczos bandpass {PERIOD_LOW:.0f}-{PERIOD_HIGH:.0f} day, window={BANDPASS_WINDOW}"
-    # ... (原有代码: out["olr_bp"].attrs...)
-    # 记得给新变量加属性，防止由计算产生的属性丢失
     out["olr_anom"].attrs = ds[var].attrs
     out["olr_anom"].attrs["note"] = "Raw daily anomaly (seasonal cycle removed), NO bandpass filter"
     out = _sanitize_coords_for_netcdf(out)
