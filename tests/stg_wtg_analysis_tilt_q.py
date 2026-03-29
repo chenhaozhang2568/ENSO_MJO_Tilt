@@ -1,22 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-stg_wtg_analysis.py — STG/WTG 分组垂直环流与 omega 合成分析
+stg_wtg_analysis_tilt_q.py — STG/WTG 分组垂直环流与 omega 合成分析（tilt_q 版）
 
 功能：
-    按事件平均 Tilt 的 ±0.7σ 阈值将 MJO 事件分为 STG（强倾斜）和 WTG（弱倾斜）两组，
-    对比两组的垂直环流结构（高度坐标矢量图）和标准化 omega 合成（气压坐标），
-    并检验两组相速度差异。
+    按事件平均 tilt_q (q_max - up_west) 的 ±0.7σ 阈值将 MJO 事件分为
+    STG（强倾斜）和 WTG（弱倾斜）两组，对比两组的垂直环流结构（高度坐标矢量图）
+    和标准化 omega 合成（气压坐标），并检验两组相速度差异。
+
+与 stg_wtg_analysis.py 的区别：
+    - 使用 tilt_q_daily_1979-2022.nc 中的 tilt_q（q最大值 - omega西边界）
+    - 使用 tilt_q_phase_speed_by_enso.csv（已含 phase_speed_m_s）
+    - 输出到 figures/stg_wtg_tilt_q/ 文件夹
+
 输入：
     era5_mjo_recon_{u,w}_norm_1979-2022.nc, mjo_mvEOF_step3_1979-2022.nc,
-    tilt_daily_step4_layermean_1979-2022.nc, mjo_events_step3_1979-2022.csv,
-    tilt_event_stats_with_enso_1979-2022.csv
+    tilt_q_daily_1979-2022.nc, mjo_events_step3_1979-2022.csv,
+    tilt_q_phase_speed_by_enso.csv
 输出：
-    figures/circulation/stg_wtg_vertical_circulation_v2.png,
-    figures/stg_wtg/stg_wtg_omega_composite.png, tilt_vs_phase_speed_scatter.png
+    figures/stg_wtg_tilt_q/stg_wtg_omega_composite.png
+    figures/stg_wtg_tilt_q/stg_wtg_vertical_circulation.png
+    figures/stg_wtg_tilt_q/tilt_q_vs_phase_speed_scatter.png
+    figures/stg_wtg_tilt_q/event_stg_wtg_classification.csv
 用法：
-    python tests/stg_wtg_analysis.py             # 全部
-    python tests/stg_wtg_analysis.py circulation  # 环流图
-    python tests/stg_wtg_analysis.py composite    # omega 合成 + 相速度
+    python tests/stg_wtg_analysis_tilt_q.py             # 全部
+    python tests/stg_wtg_analysis_tilt_q.py circulation  # 环流图
+    python tests/stg_wtg_analysis_tilt_q.py composite    # omega 合成 + 相速度
 """
 
 from __future__ import annotations
@@ -31,7 +39,6 @@ from matplotlib.colors import TwoSlopeNorm
 from scipy import stats
 from scipy.ndimage import gaussian_filter
 from scipy.interpolate import interp1d
-from scipy.signal import savgol_filter
 from pathlib import Path
 import warnings
 warnings.filterwarnings("ignore")
@@ -45,13 +52,11 @@ mpl.rcParams['axes.unicode_minus'] = False
 U_RECON_NC     = r"E:\Datas\Derived\era5_mjo_recon_u_norm_1979-2022.nc"
 W_RECON_NC     = r"E:\Datas\Derived\era5_mjo_recon_w_norm_1979-2022.nc"
 STEP3_NC       = r"E:\Datas\Derived\mjo_mvEOF_step3_1979-2022.nc"
-TILT_NC        = r"E:\Datas\Derived\tilt_daily_step4_layermean_1979-2022.nc"
+TILT_Q_NC      = r"E:\Datas\Derived\tilt_q_daily_1979-2022.nc"
 EVENTS_CSV     = r"E:\Datas\Derived\mjo_events_step3_1979-2022.csv"
-ENSO_STATS_CSV = r"E:\Datas\Derived\tilt_event_stats_with_enso_1979-2022.csv"
+TILT_Q_CSV     = r"E:\Datas\Derived\tilt_q_phase_speed_by_enso.csv"
 
-FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures")
-FIG_DIR_CIRC = FIG_DIR / "circulation"
-FIG_DIR_STG  = FIG_DIR / "stg_wtg"
+FIG_DIR = Path(r"E:\Projects\ENSO_MJO_Tilt\outputs\figures\stg_wtg_tilt_q")
 
 WINTER_MONTHS = {11, 12, 1, 2, 3, 4}
 
@@ -87,18 +92,35 @@ def _interpolate_to_height(data, levels, target_heights):
     return result
 
 
+def _classify_stg_wtg(df, tilt_col='mean_tilt_q'):
+    """按 ±0.7σ 阈值分组"""
+    mt = df[tilt_col].mean()
+    st = df[tilt_col].std()
+    df = df.copy()
+    df['group'] = 'Normal'
+    df.loc[df[tilt_col] > mt + TILT_THRESHOLD_STD * st, 'group'] = 'STG'
+    df.loc[df[tilt_col] < mt - TILT_THRESHOLD_STD * st, 'group'] = 'WTG'
+    n_stg = (df['group'] == 'STG').sum()
+    n_wtg = (df['group'] == 'WTG').sum()
+    print(f"  Tilt_q: mean={mt:.1f}, std={st:.1f}")
+    print(f"  STG threshold: > {mt + TILT_THRESHOLD_STD * st:.1f}")
+    print(f"  WTG threshold: < {mt - TILT_THRESHOLD_STD * st:.1f}")
+    print(f"  STG: {n_stg}, WTG: {n_wtg}, Normal: {len(df) - n_stg - n_wtg}")
+    return df
+
+
 # ============================================================
-# 1. CIRCULATION (from stg_wtg_circulation.py)
+# 1. CIRCULATION — 垂直环流合成图
 # ============================================================
 def run_circulation():
     """STG/WTG 垂直环流合成图 (高度坐标 + 矢量图)"""
-    FIG_DIR_CIRC.mkdir(parents=True, exist_ok=True)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
     print("\n[Circulation] Loading data...")
 
     ds_u = xr.open_dataset(U_RECON_NC)
     ds_w = xr.open_dataset(W_RECON_NC)
     ds3 = xr.open_dataset(STEP3_NC)
-    ds_tilt = xr.open_dataset(TILT_NC)
+    ds_tilt_q = xr.open_dataset(TILT_Q_NC)
     events = pd.read_csv(EVENTS_CSV, parse_dates=["start_date", "end_date"])
 
     u = ds_u["u_mjo_recon_norm"].values
@@ -108,25 +130,28 @@ def run_circulation():
     lon = ds_u["lon"].values
     center_lon = ds3["center_lon_track"].values
     amp = ds3["amp"].values
-    tilt = ds_tilt["tilt"].values
+    tilt_q = ds_tilt_q["tilt_q"].values
+    tilt_q_time = pd.to_datetime(ds_tilt_q["time"].values)
 
     print(f"  Shape: u={u.shape}, levels={levels}")
 
-    # Classify STG/WTG
+    # 计算逐事件 tilt_q 平均
     event_tilts = []
     for _, ev in events.iterrows():
-        start, end = pd.Timestamp(ev['start_date']), pd.Timestamp(ev['end_date'])
-        mask = (time >= start) & (time <= end)
-        tv = tilt[mask]
+        start = pd.Timestamp(ev['start_date'])
+        end = pd.Timestamp(ev['end_date'])
+        mask = (tilt_q_time >= start) & (tilt_q_time <= end)
+        tv = tilt_q[mask]
         valid = np.isfinite(tv)
         if valid.sum() > 0:
-            event_tilts.append({'start': start, 'end': end,
-                                'mean_tilt': np.nanmean(tv[valid])})
+            event_tilts.append({'event_id': ev['event_id'],
+                                'start': start, 'end': end,
+                                'mean_tilt_q': float(np.nanmean(tv[valid]))})
     df_ev = pd.DataFrame(event_tilts)
-    mt, st = df_ev['mean_tilt'].mean(), df_ev['mean_tilt'].std()
-    stg_events = df_ev[df_ev['mean_tilt'] > mt + TILT_THRESHOLD_STD * st]
-    wtg_events = df_ev[df_ev['mean_tilt'] < mt - TILT_THRESHOLD_STD * st]
-    print(f"  STG: {len(stg_events)}, WTG: {len(wtg_events)}")
+    df_ev = _classify_stg_wtg(df_ev)
+
+    stg_events = df_ev[df_ev['group'] == 'STG']
+    wtg_events = df_ev[df_ev['group'] == 'WTG']
 
     def _composite(event_list, lon_range=(-90, 180)):
         dlon = lon[1] - lon[0]
@@ -177,9 +202,9 @@ def run_circulation():
         u_sm[nm] = np.nan
         w_sm[nm] = np.nan
         X, Y = np.meshgrid(rel_lons, target_h)
-        w_norm = w_sm / 0.01
-        norm = TwoSlopeNorm(vmin=-1.0, vcenter=0, vmax=0.5)
-        cf = ax.contourf(X, Y, w_norm, levels=np.arange(-1.0, 0.6, 0.2),
+        w_norm = w_sm / 0.02
+        norm = TwoSlopeNorm(vmin=-1.0, vcenter=0, vmax=1.0)
+        cf = ax.contourf(X, Y, w_norm, levels=np.arange(-1.0, 1.01, 0.2),
                          cmap='RdBu_r', norm=norm, extend='both')
         for i in range(len(target_h)):
             for j in range(0, len(rel_lons), 4):
@@ -204,24 +229,27 @@ def run_circulation():
         return cf
 
     fig, axes = plt.subplots(1, 2, figsize=(18, 7))
-    cf1 = _plot_circ(axes[0], stg_comp, '(a) Strong Tilt')
-    cf2 = _plot_circ(axes[1], wtg_comp, '(b) Weak Tilt', show_ylabel=False)
-    cbar_ax = fig.add_axes([0.25, 0.02, 0.5, 0.02])
+    cf1 = _plot_circ(axes[0], stg_comp,
+                     f'(a) Strong Tilt_q (N={stg_comp["n_samples"]})')
+    cf2 = _plot_circ(axes[1], wtg_comp,
+                     f'(b) Weak Tilt_q (N={wtg_comp["n_samples"]})',
+                     show_ylabel=False)
+    cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.03])
     cbar = fig.colorbar(cf2, cax=cbar_ax, orientation='horizontal')
-    cbar.set_label('Standardized Anomalous Vertical Velocity', fontsize=10)
-    plt.subplots_adjust(bottom=0.12, wspace=0.25)
-    out = FIG_DIR_CIRC / "stg_wtg_vertical_circulation_v2.png"
+    cbar.set_label('Standardized Anomalous Vertical Velocity', fontsize=11)
+    plt.subplots_adjust(bottom=0.13, wspace=0.25)
+    out = FIG_DIR / "stg_wtg_vertical_circulation.png"
     plt.savefig(out, dpi=200, bbox_inches='tight')
     print(f"  Saved: {out}")
     plt.close()
 
 
 # ============================================================
-# 2. COMPOSITE (from stg_wtg_composite.py)
+# 2. COMPOSITE — omega 合成 + 相速度分析
 # ============================================================
 def run_composite():
     """STG/WTG omega 合成 + 相速度分析（含 u/w 风矢量）"""
-    FIG_DIR_STG.mkdir(parents=True, exist_ok=True)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
     print("\n[Composite] Loading data...")
 
     ds_u = xr.open_dataset(U_RECON_NC)
@@ -233,32 +261,13 @@ def run_composite():
     time_mjo = pd.to_datetime(ds3.time.values)
     mjo_amp = ds3['amp'].values
     events = pd.read_csv(EVENTS_CSV, parse_dates=['start_date', 'end_date'])
-    enso_stats = pd.read_csv(ENSO_STATS_CSV)
 
-    # Phase speed
-    phase_speeds = []
-    for _, ev in events.iterrows():
-        eid = ev['event_id']
-        mask = (time_mjo >= ev['start_date']) & (time_mjo <= ev['end_date'])
-        lons = center_lon[mask]
-        days = np.arange(len(lons))
-        valid = np.isfinite(lons)
-        if valid.sum() < 5:
-            phase_speeds.append({'event_id': eid, 'phase_speed_ms': np.nan})
-            continue
-        slope, *_ = stats.linregress(days[valid], lons[valid])
-        phase_speeds.append({'event_id': eid, 'phase_speed_ms': slope * 111e3 / 86400})
-    enso_stats = enso_stats.merge(pd.DataFrame(phase_speeds), on='event_id')
+    # 直接读取 tilt_q CSV（已含 phase_speed_m_s 和 mean_tilt_q）
+    tilt_q_stats = pd.read_csv(TILT_Q_CSV)
+    print(f"  Events: {len(tilt_q_stats)}")
 
-    # STG / WTG classification
-    tilt_mean = enso_stats['mean_tilt'].mean()
-    tilt_std = enso_stats['mean_tilt'].std()
-    enso_stats['group'] = 'Normal'
-    enso_stats.loc[enso_stats['mean_tilt'] > tilt_mean + TILT_THRESHOLD_STD * tilt_std, 'group'] = 'STG'
-    enso_stats.loc[enso_stats['mean_tilt'] < tilt_mean - TILT_THRESHOLD_STD * tilt_std, 'group'] = 'WTG'
-    n_stg = (enso_stats['group'] == 'STG').sum()
-    n_wtg = (enso_stats['group'] == 'WTG').sum()
-    print(f"  STG: {n_stg}, WTG: {n_wtg}, Normal: {len(enso_stats) - n_stg - n_wtg}")
+    # STG / WTG 分组
+    tilt_q_stats = _classify_stg_wtg(tilt_q_stats)
 
     u_time = pd.to_datetime(u_recon.time.values)
     w_time = pd.to_datetime(w_recon.time.values)
@@ -267,11 +276,10 @@ def run_composite():
     lon_360 = np.mod(lon, 360)
     dlon = np.abs(lon[1] - lon[0])
 
-    # 非对称经度范围：-90 到 180
     LON_WEST, LON_EAST = -90, 180
 
     def _comp(group_name):
-        group_eids = enso_stats[enso_stats['group'] == group_name]['event_id'].values
+        group_eids = tilt_q_stats[tilt_q_stats['group'] == group_name]['event_id'].values
         n_rel = int((LON_EAST - LON_WEST) / dlon) + 1
         rel_lons = np.linspace(LON_WEST, LON_EAST, n_rel)
         w_samples, u_samples = [], []
@@ -319,29 +327,27 @@ def run_composite():
     print(f"  STG: {n_stg_s} samples / {n_stg_ev} events")
     print(f"  WTG: {n_wtg_s} samples / {n_wtg_ev} events")
 
-    # ---- 绘图（匹配参考图样式）----
+    # ---- omega 合成图 ----
     fig, axes = plt.subplots(1, 2, figsize=(16, 6.5), dpi=150)
-    clevs = np.arange(-1.0, 0.55, 0.1)  # contour levels
-    norm_clr = TwoSlopeNorm(vmin=-1.0, vcenter=0, vmax=0.5)
+    clevs = np.arange(-1.0, 1.01, 0.2)
+    norm_clr = TwoSlopeNorm(vmin=-1.0, vcenter=0, vmax=1.0)
     pticks = [1000, 925, 850, 700, 600, 500, 400, 300, 200]
     height_ticks = [LEVEL_TO_HEIGHT[p] for p in pticks]
-
-    datasets = [
-        (axes[0], stg_norm, stg_u, stg_w, stg_sig, '(a) Strong Tilt', True),
-        (axes[1], wtg_norm, wtg_u, wtg_w, wtg_sig, '(b) Weak Tilt', False),
-    ]
-
-    # 将气压坐标数据插值到等高度坐标
     target_h = np.linspace(0.5, 12, 24)
 
+    datasets = [
+        (axes[0], stg_norm, stg_u, stg_w, stg_sig,
+         f'(a) Strong Tilt_q (N={n_stg_ev} events, {n_stg_s} days)', True),
+        (axes[1], wtg_norm, wtg_u, wtg_w, wtg_sig,
+         f'(b) Weak Tilt_q (N={n_wtg_ev} events, {n_wtg_s} days)', False),
+    ]
+
     for ax, w_data, u_data, w_raw, sig, title, show_ylabel in datasets:
-        # 插值到高度坐标
         w_h = _interpolate_to_height(w_data, levels, target_h)
         u_h = _interpolate_to_height(u_data, levels, target_h)
         w_raw_h = _interpolate_to_height(w_raw, levels, target_h)
         sig_h = _interpolate_to_height(sig.astype(float), levels, target_h) > 0.5
 
-        # 平滑
         w_sm = gaussian_filter(np.nan_to_num(w_h, nan=0), sigma=1.0)
         u_sm = gaussian_filter(np.nan_to_num(u_h, nan=0), sigma=1.0)
         w_raw_sm = gaussian_filter(np.nan_to_num(w_raw_h, nan=0), sigma=1.0)
@@ -352,21 +358,14 @@ def run_composite():
 
         X, Y = np.meshgrid(rel_lons, target_h)
 
-        # 填色
         cf = ax.contourf(X, Y, w_sm, levels=clevs, cmap='RdBu_r',
                           norm=norm_clr, extend='both')
 
-        # 显著性打点
         for i in range(len(target_h)):
             for j in range(0, len(rel_lons), 4):
                 if sig_h[i, j]:
                     ax.plot(rel_lons[j], target_h[i], 'k.', markersize=1.5, alpha=0.8)
 
-        # 风矢量 (u, -w*scale)
-        # 参考图: u 参考矢量 = 5 m/s，w scale = 0.02 Pa/s
-        # omega 典型值 ~0.005-0.01 Pa/s，u ~1-3 m/s
-        # 在 angles='uv' 模式下，需要让 v/u << 1 使箭头以水平为主
-        # factor=50: omega=0.008 → w_arrow=0.4，与 u≈2 相比，倾角 ~11°
         w_arrow = -w_raw_sm * 50
         skip_x, skip_y = 6, 2
         ax.quiver(X[::skip_y, ::skip_x], Y[::skip_y, ::skip_x],
@@ -374,9 +373,7 @@ def run_composite():
                   color='black', scale=30, width=0.003,
                   headwidth=4, headlength=4, pivot='middle')
 
-        # 参考矢量
-        qk_x = 0.88
-        qk_y = 0.95
+        qk_x, qk_y = 0.88, 0.95
         q = ax.quiver([rel_lons[-1] * qk_x], [target_h[-1] * qk_y],
                        [5], [0], color='black', scale=30, width=0.003,
                        headwidth=4, headlength=4, pivot='middle')
@@ -385,68 +382,84 @@ def run_composite():
         ax.text(qk_x, qk_y + 0.05, 'Reference Vector', transform=ax.transAxes,
                 fontsize=7, ha='center', va='bottom')
 
-        # MJO 中心线
         ax.axvline(0, color='limegreen', lw=3.0, alpha=0.95)
-
-        # 坐标轴
         ax.set_ylim(0.1, 12)
         ax.set_xlim(LON_WEST, LON_EAST)
         ax.set_xticks(np.arange(LON_WEST, LON_EAST + 1, 30))
-        ax.set_xticklabels([f'{int(x)}°' for x in np.arange(LON_WEST, LON_EAST + 1, 30)],
+        ax.set_xticklabels([f'{int(x)}' for x in np.arange(LON_WEST, LON_EAST + 1, 30)],
                             fontsize=8)
-        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_title(title, fontsize=12, fontweight='bold')
 
         if show_ylabel:
             ax.set_ylabel('Height (km)', fontsize=11)
 
-        # 右轴 Pressure
         ax2 = ax.twinx()
         ax2.set_ylim(ax.get_ylim())
         ax2.set_yticks(height_ticks)
         ax2.set_yticklabels([str(p) for p in pticks])
-        ax2.set_ylabel('Pressure (hPa)', fontsize=11) if not show_ylabel else None
+        if not show_ylabel:
+            ax2.set_ylabel('Pressure (hPa)', fontsize=11)
 
-    # 底部共享 colorbar
-    cbar_ax = fig.add_axes([0.2, 0.03, 0.6, 0.025])
+    cbar_ax = fig.add_axes([0.15, 0.03, 0.7, 0.03])
     cbar = fig.colorbar(cf, cax=cbar_ax, orientation='horizontal',
-                         ticks=np.arange(-1.0, 0.6, 0.1))
-    cbar.set_label('Normalized Anomalous Vertical Velocity', fontsize=10)
-    plt.subplots_adjust(bottom=0.13, wspace=0.30)
-    out = FIG_DIR_STG / "stg_wtg_omega_composite.png"
+                         ticks=np.arange(-1.0, 1.01, 0.2))
+    cbar.set_label('Normalized Anomalous Vertical Velocity', fontsize=11)
+    plt.subplots_adjust(bottom=0.14, wspace=0.30)
+    out = FIG_DIR / "stg_wtg_omega_composite.png"
     plt.savefig(out, dpi=200, bbox_inches='tight')
     print(f"  Saved: {out}")
     plt.close()
 
-    # Phase speed comparison
-    stg_spd = enso_stats[enso_stats['group'] == 'STG']['phase_speed_ms'].dropna()
-    wtg_spd = enso_stats[enso_stats['group'] == 'WTG']['phase_speed_ms'].dropna()
+    # ---- 相速度对比 ----
+    stg_spd = tilt_q_stats[tilt_q_stats['group'] == 'STG']['phase_speed_m_s'].dropna()
+    wtg_spd = tilt_q_stats[tilt_q_stats['group'] == 'WTG']['phase_speed_m_s'].dropna()
     t_val, p_val = stats.ttest_ind(stg_spd, wtg_spd, equal_var=False)
-    print(f"\n  Phase speed: STG={stg_spd.mean():.2f} m/s, WTG={wtg_spd.mean():.2f} m/s")
-    print(f"  t={t_val:+.3f}, p={p_val:.4f}")
+    u_stat, u_pval = stats.mannwhitneyu(stg_spd, wtg_spd, alternative='two-sided')
+    print(f"\n  Phase speed:")
+    print(f"    STG: mean={stg_spd.mean():.2f}, std={stg_spd.std():.2f}, N={len(stg_spd)}")
+    print(f"    WTG: mean={wtg_spd.mean():.2f}, std={wtg_spd.std():.2f}, N={len(wtg_spd)}")
+    print(f"    Welch t-test: t={t_val:+.3f}, p={p_val:.4f}")
+    print(f"    Mann-Whitney: U={u_stat:.0f}, p={u_pval:.4f}")
 
-    # Scatter
-    valid = enso_stats.dropna(subset=['mean_tilt', 'phase_speed_ms'])
+    # ---- tilt_q vs phase_speed 散点图 ----
+    valid = tilt_q_stats.dropna(subset=['mean_tilt_q', 'phase_speed_m_s'])
     fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
     colors = {'STG': '#E74C3C', 'WTG': '#3498DB', 'Normal': '#95A5A6'}
     for g in ['STG', 'Normal', 'WTG']:
         sub = valid[valid['group'] == g]
-        ax.scatter(sub['phase_speed_ms'], sub['mean_tilt'], c=colors[g],
-                   label=f"{g} (N={len(sub)})", s=60, alpha=0.7, edgecolors='k', linewidths=0.5)
-    x, y = valid['phase_speed_ms'].values, valid['mean_tilt'].values
+        ax.scatter(sub['phase_speed_m_s'], sub['mean_tilt_q'], c=colors[g],
+                   label=f"{g} (N={len(sub)})", s=60, alpha=0.7,
+                   edgecolors='k', linewidths=0.5)
+
+    x, y = valid['phase_speed_m_s'].values, valid['mean_tilt_q'].values
     slope, intercept, r, p, _ = stats.linregress(x, y)
-    ax.plot(np.linspace(x.min(), x.max(), 100),
-            slope * np.linspace(x.min(), x.max(), 100) + intercept, 'r-', lw=2, label=f'r={r:.2f}')
-    ax.set_xlabel("Phase Speed (m/s)")
-    ax.set_ylabel("Tilt (°)")
-    ax.set_title(f"Tilt vs Phase Speed (N={len(valid)}, r={r:.3f}, p={p:.4f})")
-    ax.legend()
+    x_line = np.linspace(x.min(), x.max(), 100)
+    ax.plot(x_line, slope * x_line + intercept, 'r-', lw=2, label=f'r={r:.2f}')
+
+    ax.set_xlabel("Phase Speed (m/s)", fontsize=12)
+    ax.set_ylabel("Tilt_q (deg)", fontsize=12)
+    sig_str = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "n.s."
+    ax.set_title(f"Tilt_q vs Phase Speed (N={len(valid)}, r={r:.3f}, p={p:.4f} {sig_str})",
+                 fontsize=13, fontweight='bold')
+    ax.legend(fontsize=10)
     ax.grid(ls='--', alpha=0.3)
-    out = FIG_DIR_STG / "tilt_vs_phase_speed_scatter.png"
+
+    # 添加相速度对比文字
+    text_str = (f"STG: speed={stg_spd.mean():.2f} m/s (N={len(stg_spd)})\n"
+                f"WTG: speed={wtg_spd.mean():.2f} m/s (N={len(wtg_spd)})\n"
+                f"Welch t-test: p={p_val:.4f}")
+    ax.text(0.02, 0.02, text_str, transform=ax.transAxes, fontsize=9,
+            verticalalignment='bottom',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
+
+    out = FIG_DIR / "tilt_q_vs_phase_speed_scatter.png"
     plt.savefig(out, bbox_inches='tight')
     print(f"  Saved: {out}")
     plt.close()
 
-    enso_stats.to_csv(FIG_DIR_STG / "event_stg_wtg_classification.csv", index=False)
+    # 保存分类 CSV
+    tilt_q_stats.to_csv(FIG_DIR / "event_stg_wtg_classification.csv", index=False)
+    print(f"  Saved: {FIG_DIR / 'event_stg_wtg_classification.csv'}")
 
 
 # ============================================================
@@ -460,7 +473,7 @@ ANALYSES = {
 
 def main():
     print("=" * 70)
-    print("STG/WTG Analysis")
+    print("STG/WTG Analysis (tilt_q version)")
     print("=" * 70)
     if len(sys.argv) > 1:
         name = sys.argv[1].lower()

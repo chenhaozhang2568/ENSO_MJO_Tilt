@@ -43,7 +43,7 @@ XTICK_LOCS = [20, 60, 100, 140, 180, 220]
 XTICK_LABELS = ["20E", "60E", "100E", "140E", "180", "140W"]
 
 OLR_LEVELS = np.arange(-75, 70, 5) # -75 to 65
-CONTOUR_LEVEL = -10.0
+CONTOUR_LEVEL = -15.0
 
 def setup_colormap():
     """
@@ -222,7 +222,7 @@ def plot_hovmoller(ds_sub, year, output_path):
     levels = norm.boundaries
     cf = ax.contourf(lon, time, data.values, levels=levels, cmap=cmap, norm=norm, extend='both')
     
-    # --- 2. Contours (-10 W/m2) ---
+    # --- 2. Contours (-15 W/m2) ---
     cs = ax.contour(lon, time, data.values, levels=[CONTOUR_LEVEL], colors=['blue'], linewidths=1.5)
     
     # --- 3. Trend Lines (Event-based) ---
@@ -308,7 +308,7 @@ def plot_hovmoller(ds_sub, year, output_path):
     
     # Save
     plt.tight_layout()
-    out_file = output_path / f"hovmoller_olr_recon_{year}_contour-10.png"
+    out_file = output_path / f"hovmoller_olr_recon_{year}.png"
     plt.savefig(out_file, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"Generated: {out_file}")

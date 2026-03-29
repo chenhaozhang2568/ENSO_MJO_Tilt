@@ -61,7 +61,7 @@ END_DATE   = "2022-12-31"
 # RUN OPTIONS
 # ======================
 # 设置为 True 重新生成 ERA5 重构文件，False 跳过 Part B（使用已有数据）
-RUN_ERA5_RECONSTRUCTION = True
+RUN_ERA5_RECONSTRUCTION = False
 
 # ======================
 # PAPER-STYLE SETTINGS
@@ -242,83 +242,23 @@ def _track_center_with_candidates(
     lon_max: float,
     max_west_jump: float
 ) -> xr.DataArray:
-    """DP tracking to obtain continuous daily center trajectory."""
+    """
+    Track MJO convective center by daily OLR anomaly minimum.
+    
+    每天取 [lon_min, lon_max] 范围内 OLR 异常最小值经度作为对流中心。
+    异常跳跃由后处理 jump-clamping 处理。
+    """
     dom = recon.sel(lon=slice(lon_min, lon_max))
     lons = dom["lon"].values.astype(float)
     T = dom.sizes["time"]
     center = np.full(T, np.nan, dtype=float)
 
-    t = 0
-    while t < T:
-        y0 = dom.isel(time=t).values.astype(float)
-        if not np.isfinite(y0).any():
+    for t in range(T):
+        y = dom.isel(time=t).values.astype(float)
+        if not np.isfinite(y).any():
             center[t] = np.nan
-            t += 1
             continue
-
-        t0 = t
-        t1 = t
-        while t1 + 1 < T:
-            yy = dom.isel(time=t1 + 1).values.astype(float)
-            if not np.isfinite(yy).any():
-                break
-            t1 += 1
-
-        cand_lon_list = []
-        cand_val_list = []
-
-        for tt in range(t0, t1 + 1):
-            yy = dom.isel(time=tt).values.astype(float)
-            daily_min = float(np.nanmin(yy))
-            cands = _local_minima_indices(yy)
-            if cands.size == 0:
-                cands = np.array([int(np.nanargmin(yy))], dtype=int)
-            else:
-                keep = yy[cands] <= (daily_min + DP_NEAR_MIN_DELTA)
-                cands = cands[keep]
-                if cands.size == 0:
-                    cands = np.array([int(np.nanargmin(yy))], dtype=int)
-            cands = cands[np.argsort(yy[cands])]
-            cands = cands[:DP_MAX_CANDS]
-            cand_lon_list.append(lons[cands].astype(float))
-            cand_val_list.append(yy[cands].astype(float))
-
-        D = t1 - t0 + 1
-        dp = [np.full(len(cand_val_list[d]), np.inf, dtype=float) for d in range(D)]
-        bp = [np.full(len(cand_val_list[d]), -1, dtype=int) for d in range(D)]
-        dp[0] = cand_val_list[0].copy()
-
-        for d in range(1, D):
-            vals = cand_val_list[d]
-            lls = cand_lon_list[d]
-            prev_lls = cand_lon_list[d - 1]
-            for j in range(len(vals)):
-                best_cost = np.inf
-                best_k = -1
-                for k in range(len(cand_val_list[d-1])):
-                    jump = lls[j] - prev_lls[k]
-                    if jump < -max_west_jump:
-                        continue
-                    cost = dp[d-1][k] + vals[j] + DP_JUMP_WEIGHT * abs(jump)
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_k = k
-                dp[d][j] = best_cost
-                bp[d][j] = best_k
-
-        last = int(np.argmin(dp[-1]))
-        path = [last]
-        for d in range(D - 1, 0, -1):
-            last = int(bp[d][last])
-            if last < 0:
-                last = 0
-            path.append(last)
-        path = path[::-1]
-
-        for i_day, j in enumerate(path):
-            center[t0 + i_day] = float(cand_lon_list[i_day][j])
-
-        t = t1 + 1
+        center[t] = lons[int(np.nanargmin(y))]
 
     return xr.DataArray(center, coords={"time": dom["time"]}, dims=("time",), name="center_lon_track")
 
@@ -339,6 +279,12 @@ def _sample_olr_at_track_center(recon_latmean: xr.DataArray, center_track: np.nd
 def _contour_track_from_threshold(recon_latmean: xr.DataArray, thr: float):
     rr = recon_latmean.values.astype(float)
     lon = recon_latmean["lon"].values.astype(float)
+
+    # 只在 TRACK_LON_MIN ~ TRACK_LON_MAX (60°~180°) 范围内搜索
+    lon_mask = (lon >= TRACK_LON_MIN) & (lon <= TRACK_LON_MAX)
+    rr = rr[:, lon_mask]
+    lon = lon[lon_mask]
+
     T, L = rr.shape
     west = np.full(T, np.nan, dtype=float)
     east = np.full(T, np.nan, dtype=float)
@@ -946,6 +892,8 @@ def main():
         "lat_band": f"{LAT_BAND[0]} to {LAT_BAND[1]}",
         "edge_trim_days": str(EDGE_TRIM),
         "olr_min_thresh": str(OLR_MIN_THRESH),
+        "var_frac1": str(var_frac1),
+        "var_frac2": str(var_frac2),
     })
 
     ds_out.to_netcdf(out_nc, engine="netcdf4")
@@ -1022,10 +970,15 @@ def _reconstruct_era5_field(
     field: xr.DataArray,
     pc1: np.ndarray,
     pc2: np.ndarray,
-    winter_mask: np.ndarray
+    winter_mask: np.ndarray,
+    var_frac1: float = 1.0,
+    var_frac2: float = 1.0
 ) -> xr.DataArray:
     """
-    Reconstruct field using PC1/PC2 regression.
+    Reconstruct field using PC1/PC2 regression + var_frac normalization.
+    
+    公式: recon = (beta1*pc1/var_frac1 + beta2*pc2/var_frac2) / 2
+    与 OLR 重建保持一致。
     
     Input field dims: (time, level, lon)
     Output: same dims, MJO-reconstructed
@@ -1058,10 +1011,11 @@ def _reconstruct_era5_field(
             # Least squares
             beta, _, _, _ = np.linalg.lstsq(X_train, y_train, rcond=None)
             
-            # Reconstruct for all valid PC times
+            # Reconstruct with var_frac normalization (matching OLR method)
             out[pc_valid, lev_idx, lon_idx] = (
-                beta[0] * pc1[pc_valid] + beta[1] * pc2[pc_valid]
-            )
+                beta[0] * pc1[pc_valid] / var_frac1
+                + beta[1] * pc2[pc_valid] / var_frac2
+            ) / 2.0
     
     return xr.DataArray(
         out,
@@ -1097,9 +1051,12 @@ def reconstruct_era5_fields():
     pc1 = ds_pc["pc1"]
     pc2 = ds_pc["pc2"]
     amp = ds_pc["amp"]  # MJO amplitude for normalization
+    var_frac1 = float(ds_pc.attrs.get("var_frac1", 1.0))
+    var_frac2 = float(ds_pc.attrs.get("var_frac2", 1.0))
     time_index = pd.to_datetime(pc1["time"].values)
     print(f"  PC time range: {time_index[0].strftime('%Y-%m-%d')} to {time_index[-1].strftime('%Y-%m-%d')}")
     print(f"  Total days: {len(time_index)}")
+    print(f"  var_frac1={var_frac1:.4f}, var_frac2={var_frac2:.4f}")
     
     pc1_np = pc1.values.astype(float)
     pc2_np = pc2.values.astype(float)
@@ -1123,9 +1080,9 @@ def reconstruct_era5_fields():
         # Load ERA5 data
         field = _load_era5_for_recon(var, time_index)
         
-        # Reconstruct
-        print(f"  Reconstructing...")
-        recon = _reconstruct_era5_field(field, pc1_np, pc2_np, winter)
+        # Reconstruct (with var_frac normalization, same as OLR)
+        print(f"  Reconstructing (var_frac normalization: vf1={var_frac1:.4f}, vf2={var_frac2:.4f})...")
+        recon = _reconstruct_era5_field(field, pc1_np, pc2_np, winter, var_frac1, var_frac2)
         
         # Check NaN ratio
         nan_ratio = float(np.isnan(recon.values).mean())
@@ -1188,7 +1145,8 @@ def reconstruct_era5_fields():
 # ======================
 # PART C: ERA5 3D 场重建（保留纬度维度）
 # ======================
-ERA5_3D_RECON_VARIABLES = ["u", "q", "w", "t"]  # 只重构 3D 可视化需要的变量
+ERA5_3D_RECON_VARIABLES = ["u", "v", "w", "q", "t"]  # 重构全部变量用于 2D lat×lon 诊断图
+LAT_BAND_3D = (-20.0, 20.0)  # 3D重构使用完整纬度范围（ERA5原始数据最大范围）
 
 
 def _load_era5_for_recon_3d(var: str, time_index: pd.DatetimeIndex) -> xr.DataArray:
@@ -1213,8 +1171,8 @@ def _load_era5_for_recon_3d(var: str, time_index: pd.DatetimeIndex) -> xr.DataAr
         ds = _rename_latlon_if_needed(ds)
         ds = _to_lon_180(ds)
         
-        # Select latitude band but DO NOT average
-        lat_band = LAT_BAND
+        # Select latitude band but DO NOT average (use wider band for 3D)
+        lat_band = LAT_BAND_3D
         da = ds[var].sel(lat=slice(lat_band[1], lat_band[0]))  # ERA5 has decreasing lat
         # NO latitude averaging here - keep (time, level, lat, lon)
         arrays.append(da)
@@ -1231,10 +1189,15 @@ def _reconstruct_era5_field_3d(
     field: xr.DataArray,
     pc1: np.ndarray,
     pc2: np.ndarray,
-    winter_mask: np.ndarray
+    winter_mask: np.ndarray,
+    var_frac1: float = 1.0,
+    var_frac2: float = 1.0
 ) -> xr.DataArray:
     """
-    Reconstruct field using PC1/PC2 regression, keeping latitude dimension.
+    Reconstruct field using PC1/PC2 regression + var_frac normalization,
+    keeping latitude dimension.
+    
+    公式: recon = (beta1*pc1/var_frac1 + beta2*pc2/var_frac2) / 2
     
     Input field dims: (time, level, lat, lon)
     Output: same dims, MJO-reconstructed
@@ -1270,8 +1233,9 @@ def _reconstruct_era5_field_3d(
                 try:
                     beta, _, _, _ = np.linalg.lstsq(X_train, y_train, rcond=None)
                     out[pc_valid, lev_idx, lat_idx, lon_idx] = (
-                        beta[0] * pc1[pc_valid] + beta[1] * pc2[pc_valid]
-                    )
+                        beta[0] * pc1[pc_valid] / var_frac1
+                        + beta[1] * pc2[pc_valid] / var_frac2
+                    ) / 2.0
                 except:
                     pass
                 
@@ -1313,7 +1277,10 @@ def reconstruct_era5_fields_3d():
     pc1 = ds_pc["pc1"]
     pc2 = ds_pc["pc2"]
     amp = ds_pc["amp"]
+    var_frac1 = float(ds_pc.attrs.get("var_frac1", 1.0))
+    var_frac2 = float(ds_pc.attrs.get("var_frac2", 1.0))
     time_index = pd.to_datetime(pc1["time"].values)
+    print(f"  var_frac1={var_frac1:.4f}, var_frac2={var_frac2:.4f}")
     
     pc1_np = pc1.values.astype(float)
     pc2_np = pc2.values.astype(float)
@@ -1343,7 +1310,7 @@ def reconstruct_era5_fields_3d():
         
         # Reconstruct
         print(f"  Reconstructing (this may take a while)...")
-        recon = _reconstruct_era5_field_3d(field, pc1_np, pc2_np, winter)
+        recon = _reconstruct_era5_field_3d(field, pc1_np, pc2_np, winter, var_frac1, var_frac2)
         
         nan_ratio = float(np.isnan(recon.values).mean())
         print(f"  NaN ratio: {nan_ratio:.4f}")

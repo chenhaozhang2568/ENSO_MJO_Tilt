@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pathlib import Path
+from scipy.interpolate import BSpline
 
 # ======================
 # USER PATHS
@@ -63,8 +64,14 @@ PRESSURE_WEIGHTED = False       # True=气压厚度加权层平均, False=等权
 # HALF_MAX_FRACTION = 0.5 表示边界处 ω = 50% × ω_min
 HALF_MAX_FRACTION = 0.0  # 50% = half-max (FWHM-like)
 EDGE_N_CONSEC = 1        # 连续 N 个点都满足阈值才算出边界
-SMOOTH_WINDOW = 1        # 边界检测前滑动平均窗口（1=不平滑）
+SMOOTH_WINDOW = 10        # 边界检测前滑动平均窗口（1=不平滑）
 PIVOT_DELTA_DEG = 10.0   # pivot 搜索范围
+
+# --- NCL-matching preprocessing (csa1 + smth9) ---
+CSA_KNOTS = 9            # NCL csa1 knots 参数
+CSA_TARGET_DLON = 0.25   # 目标经度分辨率（°）
+SMTH9_P = 0.50           # NCL smth9 p 参数
+SMTH9_Q = 0.25           # NCL smth9 q 参数
 MIN_VALID_POINTS = 7
 OLR_MIN_THRESH = -15.0
 ACTIVE_ONLY = False
@@ -119,6 +126,70 @@ def _mask_event_days(time: pd.DatetimeIndex, events_csv: str) -> np.ndarray:
             m[i0:i1+1] = True
     return m
 
+
+def _cubic_spline_approx_lon(da: xr.DataArray, n_knots: int,
+                             target_dlon: float) -> xr.DataArray:
+    """
+    沿经度维做 Akima 三次样条插值，匹配 NCL csa1。
+
+    使用 scipy Akima1DInterpolator，通过预计算插值矩阵实现向量化。
+    """
+    from scipy.interpolate import Akima1DInterpolator
+
+    src_lon = da["lon"].values.astype(float)
+    lon_min, lon_max = float(src_lon.min()), float(src_lon.max())
+    n_target = int(round((lon_max - lon_min) / target_dlon)) + 1
+    target_lon = np.linspace(lon_min, lon_max, n_target)
+
+    # 预计算插值矩阵：逐基向量构建 Akima 插值并采样
+    n_src = len(src_lon)
+    M = np.zeros((len(target_lon), n_src))
+    for j in range(n_src):
+        e_j = np.zeros(n_src)
+        e_j[j] = 1.0
+        M[:, j] = Akima1DInterpolator(src_lon, e_j)(target_lon)
+
+    data = da.values
+    orig_shape = data.shape
+    flat = data.reshape(-1, orig_shape[-1])  # (N, n_src)
+    out_flat = flat @ M.T                    # (N, n_tgt)
+    out = out_flat.reshape(*orig_shape[:-1], len(target_lon))
+
+    new_coords = {d: (target_lon if d == "lon" else da[d].values)
+                  for d in da.dims}
+    result = xr.DataArray(out, dims=da.dims, coords=new_coords)
+    result["lon"].attrs["units"] = "degrees_east"
+    return result
+
+
+def _smth9(data2d: np.ndarray, p: float, q: float, cyclic: bool) -> np.ndarray:
+    """
+    NCL smth9 的 Python 实现（向量化）。
+
+    公式: f' = f + (p/4)*(cross - 4f) + (q/4)*(diag - 4f)
+    边缘行（第一行/最后一行）保持不变，与 NCL 行为一致。
+    cyclic=True 时第二维（经度）做周期边界处理。
+    """
+    ny, nx = data2d.shape
+    if ny < 3:
+        return data2d.copy()
+
+    # 经度维 padding
+    if cyclic:
+        ext = np.concatenate([data2d[:, -1:], data2d, data2d[:, :1]], axis=1)
+    else:
+        ext = np.pad(data2d, ((0, 0), (1, 1)), mode='edge')
+
+    # 向量化计算内部行 [1:-1]
+    c     = ext[1:-1, 1:-1]
+    cross = ext[:-2, 1:-1] + ext[2:, 1:-1] + ext[1:-1, :-2] + ext[1:-1, 2:]
+    diag  = ext[:-2, :-2] + ext[:-2, 2:] + ext[2:, :-2] + ext[2:, 2:]
+
+    result = data2d.copy()
+    result[1:-1, :] = c + (p / 4.0) * (cross - 4.0 * c) + (q / 4.0) * (diag - 4.0 * c)
+    return result
+
+
 def _ascent_boundary_by_half_max(
     rel_lon: np.ndarray,
     w: np.ndarray,
@@ -147,18 +218,10 @@ def _ascent_boundary_by_half_max(
     rr = rel_lon[m].astype(float)
     ww = w[m].astype(float)
     
-    # 滑动平均，滤除小尺度下沉间断（~10°窗口）
-    if SMOOTH_WINDOW > 1 and len(ww) >= SMOOTH_WINDOW:
-        kernel = np.ones(SMOOTH_WINDOW) / SMOOTH_WINDOW
-        ww = np.convolve(ww, kernel, mode='same')
+    # 注意：滑动平均已在 main() 中逐层预处理完成，此处不再重复平滑
     
-    # --- 找 pivot：对流中心附近最强上升点 ---
-    win = (rr >= -pivot_delta) & (rr <= pivot_delta)
-    if win.any():
-        j0 = int(np.nanargmin(ww[win]))
-        pivot_idx = np.where(win)[0][j0]
-    else:
-        pivot_idx = int(np.nanargmin(ww))
+    # --- 直接以 OLR 对流中心 (rel_lon=0) 为参考点，匹配 NCL ---
+    pivot_idx = int(np.argmin(np.abs(rr)))
     
     wmin = float(ww[pivot_idx])
     if (not np.isfinite(wmin)) or (wmin >= 0):
@@ -252,10 +315,29 @@ def main():
     if lon_vals.min() < 0:
         new_lon = np.where(lon_vals < 0, lon_vals + 360, lon_vals)
         w = w.assign_coords(lon=new_lon).sortby("lon")
-    
-    # subset lon to tracking window
-    w = w.sel(lon=slice(TRACK_LON_MIN, TRACK_LON_MAX))
-    
+
+    # --- 三次样条逼近到 0.25° 分辨率 (匹配 NCL csa1) ---
+    print(f"  Cubic spline approximation (knots={CSA_KNOTS}, "
+          f"target dlon={CSA_TARGET_DLON}°)...")
+    w = _cubic_spline_approx_lon(w, CSA_KNOTS, CSA_TARGET_DLON)
+    print(f"  After interpolation: lon {w['lon'].shape}")
+
+    # --- 逐层滑动平均平滑 (每层独立, window={SMOOTH_WINDOW}) ---
+    if SMOOTH_WINDOW > 1:
+        print(f"  Applying per-level sliding average (window={SMOOTH_WINDOW})...")
+        w_vals = w.values  # (time, level, lon)
+        kernel = np.ones(SMOOTH_WINDOW) / SMOOTH_WINDOW
+        for t in range(w_vals.shape[0]):
+            for k in range(w_vals.shape[1]):
+                profile = w_vals[t, k, :]
+                valid = np.isfinite(profile).astype(float)
+                filled = np.where(np.isfinite(profile), profile, 0.0)
+                smoothed = np.convolve(filled, kernel, mode='same')
+                count = np.convolve(valid, kernel, mode='same')
+                count[count < 1e-10] = np.nan
+                w_vals[t, k, :] = smoothed / count
+        w = xr.DataArray(w_vals, dims=w.dims, coords=w.coords)
+
     # layer-mean: low (1000-600 hPa), up (400-200 hPa)
     w_low_sel = w.sel(level=slice(LOW_LAYER[0], LOW_LAYER[1]))
     w_up_sel  = w.sel(level=slice(UP_LAYER[0],  UP_LAYER[1]))
@@ -267,10 +349,14 @@ def main():
         print("  Using equal-weight layer mean")
         w_low = w_low_sel.mean("level", skipna=True)
         w_up  = w_up_sel.mean("level", skipna=True)
-    
+
     # make sure dims are (time, lon)
     w_low = w_low.transpose("time", "lon")
     w_up  = w_up.transpose("time", "lon")
+
+    # subset lon to tracking window
+    w_low = w_low.sel(lon=slice(TRACK_LON_MIN, TRACK_LON_MAX))
+    w_up  = w_up.sel(lon=slice(TRACK_LON_MIN, TRACK_LON_MAX))
     
     print(f"  w_low shape: {w_low.shape}, w_up shape: {w_up.shape}")
 
@@ -324,9 +410,7 @@ def main():
         if not np.isfinite(c):
             continue
 
-        # require amp-valid for normalization result
-        if not amp_ok[i]:
-            continue
+        # (振幅筛选已去除，与 NCL 一致)
 
         # build relative lon axis in tracking window (no wrap needed)
         rel = lon - float(c)
